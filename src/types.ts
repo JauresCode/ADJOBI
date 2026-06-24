@@ -17,6 +17,25 @@ export interface Employee {
   joinedDate: string;
   isActive?: boolean;
   password?: string;
+  firebaseUid?: string;
+  pointsTotal?: number;
+  serieActuelle?: number;
+  derniereDatePointage?: string;
+}
+
+export interface Badge {
+  id: string;
+  title: string;
+  description: string;
+  iconEmoji: string;
+  pointsRequired: number;
+}
+
+export interface BadgeUtilisateur {
+  id: string;
+  employeeId: string;
+  badgeId: string;
+  obtainedAt: string;
 }
 
 export interface TaskHistoryEntry {

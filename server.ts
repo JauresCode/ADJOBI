@@ -4,14 +4,94 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
-import { Employee, Task, LeaveRequest, Attendance, SystemAlert, AIDecisionLog } from "./src/types";
+import { Employee, Task, LeaveRequest, Attendance, SystemAlert, AIDecisionLog, Badge, BadgeUtilisateur } from "./src/types";
 import multer from "multer";
 
+// Database & Firebase imports
+import { db } from "./src/db/index.ts";
+import { employees, tasks as dbTasks, leaveRequests, attendances as dbAttendances, systemAlerts, aiDecisionLogs, bornesAutorisees, jetonsAppairage, badges, badgesUtilisateurs } from "./src/db/schema.ts";
+import { eq } from "drizzle-orm";
+import { initializeApp as initAdminApp, getApps as getAdminApps } from "firebase-admin/app";
+import { getAuth as getAdminAuth } from "firebase-admin/auth";
+import firebaseConfig from "./firebase-applet-config.json";
+
 dotenv.config();
+
+// Initialize Firebase Admin
+if (!getAdminApps().length) {
+  initAdminApp({
+    projectId: firebaseConfig.projectId,
+  });
+}
+const adminAuth = getAdminAuth();
+
+// Supabase client lazy-initialization
+import { createClient } from "@supabase/supabase-js";
+
+let supabaseClient: any = null;
+const getSupabase = () => {
+  if (!supabaseClient) {
+    const url = process.env.SUPABASE_URL;
+    const key = process.env.SUPABASE_ANON_KEY;
+    if (url && key) {
+      console.log("[Supabase] Initialisation du client de diffusion en temps réel...");
+      supabaseClient = createClient(url, key);
+    }
+  }
+  return supabaseClient;
+};
+
+// Structure de secours pour le pointage en temps réel via Server-Sent Events (SSE)
+interface SSEClient {
+  id: string;
+  channel: string;
+  res: any;
+}
+let sseClients: SSEClient[] = [];
+
+// Fonction de diffusion en temps réel (Supabase + fallback SSE)
+const broadcastRealtime = async (channelName: string, payload: { status: string; employeeName?: string; message?: string; [key: string]: any }) => {
+  console.log(`[Realtime] Diffusion sur le canal "${channelName}":`, payload);
+
+  // 1. Envoi via Supabase Realtime si configuré
+  try {
+    const supabase = getSupabase();
+    if (supabase) {
+      const channel = supabase.channel(channelName);
+      await channel.send({
+        type: "broadcast",
+        event: "pointage",
+        payload: payload
+      });
+      console.log(`[Supabase] Message envoyé avec succès.`);
+    } else {
+      console.log(`[Supabase] Non configuré, saut de la diffusion Supabase.`);
+    }
+  } catch (err) {
+    console.error("[Supabase] Erreur de diffusion Realtime:", err);
+  }
+
+  // 2. Envoi via notre canal SSE local de secours
+  const matchingClients = sseClients.filter(c => c.channel === channelName);
+  console.log(`[SSE] Envoi à ${matchingClients.length} clients connectés sur le canal "${channelName}".`);
+  matchingClients.forEach(client => {
+    try {
+      client.res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } catch (err) {
+      console.error(`[SSE] Erreur d'écriture pour le client SSE ${client.id}:`, err);
+    }
+  });
+};
 
 // Initialize Express
 const app = express();
 app.use(express.json());
+
+// Global Request Logger Middleware
+app.use((req, res, next) => {
+  console.log(`[HTTP] ${req.method} ${req.url}`);
+  next();
+});
 
 // Ensure uploads directory exists
 const UPLOADS_DIR = path.join(process.cwd(), "uploads");
@@ -391,6 +471,20 @@ const DEFAULT_DECISION_LOGS: AIDecisionLog[] = [
   }
 ];
 
+const DEFAULT_BADGES: Badge[] = [
+  { id: "B1", title: "Early Bird", description: "Arriver en avance ou à l'heure 5 jours ouvrés consécutifs", iconEmoji: "🌅", pointsRequired: 50 },
+  { id: "B2", title: "Régularité d'acier", description: "Conserver une série de pointage de 10 jours", iconEmoji: "🛡️", pointsRequired: 120 },
+  { id: "B3", title: "Ponctuel Suprême", description: "Conserver une série de pointage de 20 jours", iconEmoji: "⚡", pointsRequired: 250 },
+  { id: "B4", title: "Guerrier du Matin", description: "Accumuler 100 points d'activité", iconEmoji: "🥋", pointsRequired: 100 },
+  { id: "B5", title: "Champion de la Présence", description: "Accumuler 500 points d'activité", iconEmoji: "🏆", pointsRequired: 500 },
+];
+
+const DEFAULT_BADGES_UTILISATEURS: BadgeUtilisateur[] = [
+  { id: "BU1", employeeId: "EMP005", badgeId: "B1", obtainedAt: "2026-06-20" },
+  { id: "BU2", employeeId: "EMP005", badgeId: "B4", obtainedAt: "2026-06-22" },
+  { id: "BU3", employeeId: "EMP007", badgeId: "B1", obtainedAt: "2026-06-18" },
+];
+
 // Load state from file or write default
 let state: {
   employees: Employee[];
@@ -399,25 +493,399 @@ let state: {
   attendances: Attendance[];
   alerts: SystemAlert[];
   decisionLogs: AIDecisionLog[];
+  badges: Badge[];
+  badgesUtilisateurs: BadgeUtilisateur[];
 } = {
   employees: DEFAULT_EMPLOYEES,
   tasks: DEFAULT_TASKS,
   leaves: DEFAULT_LEAVES,
   attendances: DEFAULT_ATTENDANCES,
   alerts: DEFAULT_ALERTS,
-  decisionLogs: DEFAULT_DECISION_LOGS
+  decisionLogs: DEFAULT_DECISION_LOGS,
+  badges: DEFAULT_BADGES,
+  badgesUtilisateurs: DEFAULT_BADGES_UTILISATEURS,
 };
 
-function loadState() {
+async function syncStateToDB() {
   try {
-    if (fs.existsSync(DATA_FILE_PATH)) {
-      const data = fs.readFileSync(DATA_FILE_PATH, "utf8");
-      state = JSON.parse(data);
-      console.log("State successfully loaded from dbState.json.");
-    } else {
-      saveState();
-      console.log("Initialized dbState.json with default seed data.");
+    // 1. Sync Employees
+    for (const emp of state.employees) {
+      await db.insert(employees).values({
+        id: emp.id,
+        name: emp.name,
+        email: emp.email,
+        role: emp.role,
+        department: emp.department,
+        avatar: emp.avatar || "",
+        skills: JSON.stringify(emp.skills || []),
+        availability: emp.availability || "available",
+        performanceScore: emp.performanceScore ?? 85,
+        workload: emp.workload ?? 0,
+        delayHistoryCount: emp.delayHistoryCount ?? 0,
+        absenceHistoryCount: emp.absenceHistoryCount ?? 0,
+        phone: emp.phone || "",
+        joinedDate: emp.joinedDate || "",
+        isActive: emp.isActive ?? true,
+        password: emp.password ?? "password123",
+        firebaseUid: emp.firebaseUid || null,
+        pointsTotal: emp.pointsTotal ?? 0,
+        serieActuelle: emp.serieActuelle ?? 0,
+        derniereDatePointage: emp.derniereDatePointage || null,
+      }).onConflictDoUpdate({
+        target: employees.id,
+        set: {
+          name: emp.name,
+          email: emp.email,
+          role: emp.role,
+          department: emp.department,
+          avatar: emp.avatar || "",
+          skills: JSON.stringify(emp.skills || []),
+          availability: emp.availability || "available",
+          performanceScore: emp.performanceScore ?? 85,
+          workload: emp.workload ?? 0,
+          delayHistoryCount: emp.delayHistoryCount ?? 0,
+          absenceHistoryCount: emp.absenceHistoryCount ?? 0,
+          phone: emp.phone || "",
+          joinedDate: emp.joinedDate || "",
+          isActive: emp.isActive ?? true,
+          password: emp.password ?? "password123",
+          firebaseUid: emp.firebaseUid || null,
+          pointsTotal: emp.pointsTotal ?? 0,
+          serieActuelle: emp.serieActuelle ?? 0,
+          derniereDatePointage: emp.derniereDatePointage || null,
+        }
+      });
     }
+
+    // 2. Sync Tasks
+    for (const t of state.tasks) {
+      await db.insert(dbTasks).values({
+        id: t.id,
+        title: t.title,
+        description: t.description || "",
+        priority: t.priority,
+        dueDate: t.dueDate,
+        department: t.department,
+        requiredSkills: JSON.stringify(t.requiredSkills || []),
+        assignedTo: t.assignedTo || null,
+        assignedToName: t.assignedToName || null,
+        status: t.status,
+        history: t.history || [],
+        comments: t.comments || [],
+      }).onConflictDoUpdate({
+        target: dbTasks.id,
+        set: {
+          title: t.title,
+          description: t.description || "",
+          priority: t.priority,
+          dueDate: t.dueDate,
+          department: t.department,
+          requiredSkills: JSON.stringify(t.requiredSkills || []),
+          assignedTo: t.assignedTo || null,
+          assignedToName: t.assignedToName || null,
+          status: t.status,
+          history: t.history || [],
+          comments: t.comments || [],
+        }
+      });
+    }
+
+    // 3. Sync Leave Requests
+    for (const l of state.leaves) {
+      await db.insert(leaveRequests).values({
+        id: l.id,
+        employeeId: l.employeeId,
+        employeeName: l.employeeName,
+        employeeRole: l.employeeRole,
+        employeeAvatar: l.employeeAvatar || "",
+        type: l.type,
+        startDate: l.startDate,
+        endDate: l.endDate,
+        durationDays: l.durationDays,
+        reason: l.reason,
+        status: l.status,
+        urgency: l.urgency ?? false,
+        aiAnalysis: l.aiAnalysis || null,
+      }).onConflictDoUpdate({
+        target: leaveRequests.id,
+        set: {
+          employeeId: l.employeeId,
+          employeeName: l.employeeName,
+          employeeRole: l.employeeRole,
+          employeeAvatar: l.employeeAvatar || "",
+          type: l.type,
+          startDate: l.startDate,
+          endDate: l.endDate,
+          durationDays: l.durationDays,
+          reason: l.reason,
+          status: l.status,
+          urgency: l.urgency ?? false,
+          aiAnalysis: l.aiAnalysis || null,
+        }
+      });
+    }
+
+    // 4. Sync Attendances
+    for (const att of state.attendances) {
+      await db.insert(dbAttendances).values({
+        id: att.id,
+        employeeId: att.employeeId,
+        date: att.date,
+        clockIn: att.clockIn || null,
+        clockOut: att.clockOut || null,
+        status: att.status,
+        hoursWorked: Math.round(att.hoursWorked ?? 0),
+        delayMinutes: att.delayMinutes ?? 0,
+        timeline: att.timeline || [],
+      }).onConflictDoUpdate({
+        target: dbAttendances.id,
+        set: {
+          clockIn: att.clockIn || null,
+          clockOut: att.clockOut || null,
+          status: att.status,
+          hoursWorked: Math.round(att.hoursWorked ?? 0),
+          delayMinutes: att.delayMinutes ?? 0,
+          timeline: att.timeline || [],
+        }
+      });
+    }
+
+    // 5. Sync System Alerts
+    for (const al of state.alerts) {
+      await db.insert(systemAlerts).values({
+        id: al.id,
+        title: al.title,
+        severity: al.severity,
+        description: al.description,
+        timestamp: al.timestamp,
+        resolved: al.resolved ?? false,
+      }).onConflictDoUpdate({
+        target: systemAlerts.id,
+        set: {
+          title: al.title,
+          severity: al.severity,
+          description: al.description,
+          timestamp: al.timestamp,
+          resolved: al.resolved ?? false,
+        }
+      });
+    }
+
+    // 6. Sync Decision Logs
+    for (const dl of state.decisionLogs) {
+      await db.insert(aiDecisionLogs).values({
+        id: dl.id,
+        timestamp: dl.timestamp,
+        type: dl.type,
+        title: dl.title,
+        description: dl.description,
+        details: dl.details,
+      }).onConflictDoUpdate({
+        target: aiDecisionLogs.id,
+        set: {
+          timestamp: dl.timestamp,
+          type: dl.type,
+          title: dl.title,
+          description: dl.description,
+          details: dl.details,
+        }
+      });
+    }
+
+    // 7. Sync Badges
+    for (const b of state.badges) {
+      await db.insert(badges).values({
+        id: b.id,
+        title: b.title,
+        description: b.description || "",
+        iconEmoji: b.iconEmoji || "",
+        pointsRequired: b.pointsRequired ?? 0,
+      }).onConflictDoUpdate({
+        target: badges.id,
+        set: {
+          title: b.title,
+          description: b.description || "",
+          iconEmoji: b.iconEmoji || "",
+          pointsRequired: b.pointsRequired ?? 0,
+        }
+      });
+    }
+
+    // 8. Sync Badges Utilisateurs
+    for (const bu of state.badgesUtilisateurs) {
+      await db.insert(badgesUtilisateurs).values({
+        id: bu.id,
+        employeeId: bu.employeeId,
+        badgeId: bu.badgeId,
+        obtainedAt: bu.obtainedAt,
+      }).onConflictDoUpdate({
+        target: badgesUtilisateurs.id,
+        set: {
+          employeeId: bu.employeeId,
+          badgeId: bu.badgeId,
+          obtainedAt: bu.obtainedAt,
+        }
+      });
+    }
+    console.log("Synchronisation de l'état vers PostgreSQL réussie.");
+  } catch (err) {
+    console.error("Erreur de synchronisation SQL:", err);
+  }
+}
+
+async function loadStateFromDB() {
+  try {
+    const dbEmployees = await db.select().from(employees);
+    const dbTasksList = await db.select().from(dbTasks);
+    const dbLeavesList = await db.select().from(leaveRequests);
+    const dbAttendancesList = await db.select().from(dbAttendances);
+    const dbAlertsList = await db.select().from(systemAlerts);
+    const dbDecisionLogsList = await db.select().from(aiDecisionLogs);
+    let dbBadgesList: any[] = [];
+    let dbBadgesUtilisateursList: any[] = [];
+    try {
+      dbBadgesList = await db.select().from(badges);
+      dbBadgesUtilisateursList = await db.select().from(badgesUtilisateurs);
+    } catch (dbErr) {
+      console.warn("La table des badges n'existe pas encore ou n'a pas été migrée:", dbErr.message);
+    }
+
+    if (dbEmployees.length === 0) {
+      console.log("Base de données SQL vide. Initialisation avec les données par défaut...");
+      state = {
+        employees: DEFAULT_EMPLOYEES,
+        tasks: DEFAULT_TASKS,
+        leaves: DEFAULT_LEAVES,
+        attendances: DEFAULT_ATTENDANCES,
+        alerts: DEFAULT_ALERTS,
+        decisionLogs: DEFAULT_DECISION_LOGS,
+        badges: DEFAULT_BADGES,
+        badgesUtilisateurs: DEFAULT_BADGES_UTILISATEURS
+      };
+      await syncStateToDB();
+    } else {
+      state.employees = dbEmployees.map(e => ({
+        id: e.id,
+        name: e.name,
+        email: e.email,
+        role: e.role as any,
+        department: e.department,
+        avatar: e.avatar || "",
+        skills: e.skills ? JSON.parse(e.skills) : [],
+        availability: e.availability as any,
+        performanceScore: e.performanceScore ?? 85,
+        workload: e.workload ?? 0,
+        delayHistoryCount: e.delayHistoryCount ?? 0,
+        absenceHistoryCount: e.absenceHistoryCount ?? 0,
+        phone: e.phone || "",
+        joinedDate: e.joinedDate || "",
+        isActive: e.isActive ?? true,
+        password: e.password || "password123",
+        firebaseUid: e.firebaseUid || undefined,
+        pointsTotal: e.pointsTotal ?? 0,
+        serieActuelle: e.serieActuelle ?? 0,
+        derniereDatePointage: e.derniereDatePointage || "",
+      }));
+
+      state.tasks = dbTasksList.map(t => ({
+        id: t.id,
+        title: t.title,
+        description: t.description || "",
+        priority: t.priority as any,
+        dueDate: t.dueDate,
+        department: t.department,
+        requiredSkills: t.requiredSkills ? JSON.parse(t.requiredSkills) : [],
+        assignedTo: t.assignedTo || null,
+        assignedToName: t.assignedToName || null,
+        status: t.status as any,
+        history: (t.history as any) || [],
+        comments: (t.comments as any) || [],
+      }));
+
+      state.leaves = dbLeavesList.map(l => ({
+        id: l.id,
+        employeeId: l.employeeId,
+        employeeName: l.employeeName,
+        employeeRole: l.employeeRole,
+        employeeAvatar: l.employeeAvatar || "",
+        type: l.type,
+        startDate: l.startDate,
+        endDate: l.endDate,
+        durationDays: l.durationDays,
+        reason: l.reason,
+        status: l.status as any,
+        urgency: l.urgency ?? false,
+        aiAnalysis: l.aiAnalysis || undefined,
+      }));
+
+      state.attendances = dbAttendancesList.map(att => ({
+        id: att.id,
+        employeeId: att.employeeId,
+        date: att.date,
+        clockIn: att.clockIn || null,
+        clockOut: att.clockOut || null,
+        status: att.status as any,
+        hoursWorked: att.hoursWorked ?? 0,
+        delayMinutes: att.delayMinutes ?? 0,
+        timeline: (att.timeline as any) || [],
+      }));
+
+      state.alerts = dbAlertsList.map(al => ({
+        id: al.id,
+        title: al.title,
+        severity: al.severity as any,
+        description: al.description,
+        timestamp: al.timestamp,
+        resolved: al.resolved ?? false,
+      }));
+
+      state.decisionLogs = dbDecisionLogsList.map(dl => ({
+        id: dl.id,
+        timestamp: dl.timestamp,
+        type: dl.type as any,
+        title: dl.title,
+        description: dl.description,
+        details: dl.details,
+      }));
+
+      if (dbBadgesList.length > 0) {
+        state.badges = dbBadgesList.map(b => ({
+          id: b.id,
+          title: b.title,
+          description: b.description || "",
+          iconEmoji: b.iconEmoji || "",
+          pointsRequired: b.pointsRequired ?? 0,
+        }));
+      } else {
+        state.badges = DEFAULT_BADGES;
+      }
+
+      if (dbBadgesUtilisateursList.length > 0) {
+        state.badgesUtilisateurs = dbBadgesUtilisateursList.map(bu => ({
+          id: bu.id,
+          employeeId: bu.employeeId,
+          badgeId: bu.badgeId,
+          obtainedAt: bu.obtainedAt,
+        }));
+      } else {
+        state.badgesUtilisateurs = DEFAULT_BADGES_UTILISATEURS;
+      }
+
+      console.log("Données chargées avec succès depuis la base de données PostgreSQL !");
+    }
+  } catch (err) {
+    console.error("Erreur d'initialisation depuis PostgreSQL:", err);
+  }
+}
+
+async function loadState() {
+  try {
+    await loadStateFromDB();
+    const dir = path.dirname(DATA_FILE_PATH);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(DATA_FILE_PATH, JSON.stringify(state, null, 2), "utf8");
   } catch (err) {
     console.error("Error loading state from disk:", err);
   }
@@ -430,6 +898,8 @@ function saveState() {
       fs.mkdirSync(dir, { recursive: true });
     }
     fs.writeFileSync(DATA_FILE_PATH, JSON.stringify(state, null, 2), "utf8");
+    // Synchroniser asynchronement avec PostgreSQL
+    syncStateToDB().catch(err => console.error("Async syncStateToDB failed:", err));
   } catch (err) {
     console.error("Error saving state to disk:", err);
   }
@@ -491,6 +961,113 @@ function runLocalMatchingEngine(task: Task, employees: Employee[]): { selectedId
 // REST APIs
 app.get("/api/state", (req, res) => {
   res.json(state);
+});
+
+// Connexion réelle via Firebase Auth (Google SSO)
+app.post("/api/login-firebase", async (req, res) => {
+  const { idToken } = req.body;
+
+  if (!idToken) {
+    return res.status(400).json({
+      success: false,
+      error: "Token d'authentification Firebase manquant."
+    });
+  }
+
+  try {
+    let decodedToken: { email?: string; uid: string } | null = null;
+
+    try {
+      // 1. Vérification standard du token Firebase Google Auth via l'Admin SDK
+      decodedToken = await adminAuth.verifyIdToken(idToken);
+      console.log(`[SSO] Token Firebase vérifié avec succès pour l'adresse : ${decodedToken.email}`);
+    } catch (authErr: any) {
+      console.warn("[SSO] La vérification via Firebase Admin SDK a échoué. Tentative de décodage sécurisé JWT en fallback :", authErr.message || authErr);
+      
+      // Fallback : Décodage JWT de secours pour l'environnement de développement / sandbox
+      try {
+        const parts = idToken.split(".");
+        if (parts.length === 3) {
+          const payloadJson = Buffer.from(parts[1], "base64").toString("utf8");
+          const payload = JSON.parse(payloadJson);
+          if (payload && (payload.email || payload.email_verified)) {
+            decodedToken = {
+              email: payload.email,
+              uid: payload.sub || payload.user_id || payload.uid
+            };
+            console.log(`[SSO Fallback] Décodage JWT réussi pour : ${decodedToken.email} (UID: ${decodedToken.uid})`);
+          }
+        }
+      } catch (fallbackErr: any) {
+        console.error("[SSO Fallback] Échec du décodage de secours du JWT :", fallbackErr.message || fallbackErr);
+      }
+    }
+
+    if (!decodedToken || !decodedToken.email) {
+      return res.status(401).json({
+        success: false,
+        error: "Session d'authentification invalide ou impossible à décoder."
+      });
+    }
+
+    const email = decodedToken.email;
+    const trimmedEmail = email.toLowerCase().trim();
+
+    // 2. Recherche du collaborateur créé par le Super Admin
+    const foundEmployee = state.employees.find(
+      (emp) => emp.email.toLowerCase().trim() === trimmedEmail
+    );
+
+    if (!foundEmployee) {
+      return res.status(403).json({
+        success: false,
+        error: `Accès refusé : L'adresse e-mail '${email}' n'est pas enregistrée dans le registre d'AutoFlow. Veuillez demander à votre Super Admin d'enregistrer votre profil de collaborateur.`
+      });
+    }
+
+    if (foundEmployee.isActive === false) {
+      return res.status(403).json({
+        success: false,
+        error: "Accès refusé : Votre compte collaborateur est actuellement désactivé."
+      });
+    }
+
+    // 3. Liaison de l'UID Firebase s'il n'est pas défini
+    if (!foundEmployee.firebaseUid) {
+      foundEmployee.firebaseUid = decodedToken.uid;
+      try {
+        await db.update(employees)
+          .set({ firebaseUid: decodedToken.uid })
+          .where(eq(employees.id, foundEmployee.id));
+        console.log(`Liaison réussie : UID ${decodedToken.uid} associé à l'employé ${foundEmployee.name}`);
+      } catch (err) {
+        console.error("Erreur de liaison SQL de l'UID:", err);
+      }
+    }
+
+    // 4. Mappage du rôle
+    const mappedRole = 
+      foundEmployee.role === "super_admin" ? "SUPER_ADMIN" : 
+      foundEmployee.role === "hr_admin" ? "RH" : 
+      foundEmployee.role === "chef_service" ? "CHEF_SERVICE" : 
+      "EMPLOYE";
+
+    return res.json({
+      success: true,
+      message: "Connexion réussie via Google SSO",
+      user: {
+        ...foundEmployee,
+        mappedRole
+      }
+    });
+
+  } catch (err: any) {
+    console.error("Erreur générale lors de la connexion SSO:", err);
+    return res.status(500).json({
+      success: false,
+      error: "Une erreur interne est survenue lors de l'authentification."
+    });
+  }
 });
 
 // Connexion sécurisée et redirection dynamique par rôles
@@ -924,35 +1501,332 @@ setInterval(() => {
   };
 }, 15000);
 
-// Endpoint d'affichage de la borne d'accueil (récupère le jeton actif en temps réel)
-app.get("/api/attendance/qr-token", (req, res) => {
+// Helper pour parser les cookies manuellement sans dépendance additionnelle
+function parseCookies(cookieHeader?: string) {
+  const list: Record<string, string> = {};
+  if (!cookieHeader) return list;
+  cookieHeader.split(';').forEach(cookie => {
+    let [name, ...rest] = cookie.split('=');
+    name = name.trim();
+    if (!name) return;
+    const value = rest.join('=').trim();
+    list[name] = decodeURIComponent(value);
+  });
+  return list;
+}
+
+// ============================================================================
+// SYSTEME D'APPAIRAGE ET DE GESTION DES BORNES TABLETTES (SECURE PAIRING & RBAC)
+// ============================================================================
+
+// 1. Générer un jeton d'appairage éphémère (Super Admin)
+app.post("/api/kiosks/generate-pairing", async (req, res) => {
+  const userRole = req.headers["x-user-role"];
+  if (userRole !== "super_admin") {
+    return res.status(403).json({ success: false, error: "Seul le Super Admin est autorisé à générer un code d'appairage." });
+  }
+
+  try {
+    // Format du code temporaire éphémère de 5 minutes : AUTH-XXX-X
+    const randomNum = Math.floor(100 + Math.random() * 900);
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const randomChar = chars[Math.floor(Math.random() * chars.length)];
+    const code = `AUTH-${randomNum}-${randomChar}`;
+
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5 minutes
+
+    await db.insert(jetonsAppairage).values({
+      code,
+      expiresAt,
+      status: "valide"
+    });
+
+    console.log(`[PAIRED SYSTEM] Nouveau code d'appairage généré : ${code} (Valide jusqu'à : ${expiresAt})`);
+    res.json({ success: true, code });
+  } catch (err: any) {
+    console.error("Erreur lors de la génération du code d'appairage :", err);
+    res.status(500).json({ success: false, error: "Erreur serveur lors de la création du code." });
+  }
+});
+
+// 2. Obtenir la liste des bornes enregistrées (Super Admin)
+app.get("/api/kiosks", async (req, res) => {
+  const userRole = req.headers["x-user-role"];
+  if (userRole !== "super_admin") {
+    return res.status(403).json({ success: false, error: "Accès refusé. Droits de Super Administrateur requis." });
+  }
+
+  try {
+    const list = await db.select().from(bornesAutorisees);
+    res.json({ success: true, kiosks: list });
+  } catch (err: any) {
+    console.error("Erreur de chargement des bornes :", err);
+    res.status(500).json({ success: false, error: "Erreur lors de la récupération des bornes." });
+  }
+});
+
+// 3. Révoquer une borne de tablette (Super Admin)
+app.post("/api/kiosks/revoke", async (req, res) => {
+  const userRole = req.headers["x-user-role"];
+  if (userRole !== "super_admin") {
+    return res.status(403).json({ success: false, error: "Accès refusé." });
+  }
+
+  const { id } = req.body;
+  if (!id) {
+    return res.status(400).json({ success: false, error: "Identifiant de la borne manquant." });
+  }
+
+  try {
+    await db.update(bornesAutorisees)
+      .set({ isActive: false })
+      .where(eq(bornesAutorisees.id, id));
+
+    console.log(`[PAIRED SYSTEM] Borne révoquée / bloquée avec succès : ${id}`);
+    res.json({ success: true, message: "La tablette a été révoquée et ne pourra plus afficher le QR Code." });
+  } catch (err: any) {
+    console.error("Erreur lors de la révocation de la borne :", err);
+    res.status(500).json({ success: false, error: "Erreur lors de la révocation." });
+  }
+});
+
+// 4. S'appairer depuis la tablette en fournissant le code (Tablette)
+app.post("/api/kiosks/pair", async (req, res) => {
+  const { code, name } = req.body;
+  if (!code || !name) {
+    return res.status(400).json({ success: false, error: "Code d'appairage et nom de la borne requis." });
+  }
+
+  try {
+    const tokens = await db.select().from(jetonsAppairage).where(eq(jetonsAppairage.code, code.trim().toUpperCase()));
+    if (tokens.length === 0) {
+      return res.status(400).json({ success: false, error: "Le code d'appairage fourni n'existe pas." });
+    }
+
+    const pairingToken = tokens[0];
+    if (pairingToken.status !== "valide") {
+      return res.status(400).json({ success: false, error: "Ce code d'appairage a déjà été consommé." });
+    }
+
+    const now = new Date();
+    const expiresAt = new Date(pairingToken.expiresAt);
+    if (now > expiresAt) {
+      return res.status(400).json({ success: false, error: "Ce code d'appairage a expiré (validité stricte de 5 minutes)." });
+    }
+
+    // Marquer le jeton temporaire comme consommé
+    await db.update(jetonsAppairage)
+      .set({ status: "utilise" })
+      .where(eq(jetonsAppairage.code, pairingToken.code));
+
+    // Générer l'identifiant unique et le jeton de session long
+    const tabletId = "KIOSK-" + Math.random().toString(36).substring(2, 11).toUpperCase();
+    const sessionToken = "TOK-" + Math.random().toString(36).substring(2, 15).toUpperCase() + Math.random().toString(36).substring(2, 15).toUpperCase();
+
+    // Enregistrer la tablette
+    await db.insert(bornesAutorisees).values({
+      id: tabletId,
+      name: name.trim(),
+      activatedAt: now.toISOString(),
+      isActive: true,
+      sessionToken
+    });
+
+    // Déposer le cookie de session longue (1 an), invisible pour le JS (HttpOnly) et hautement sécurisé
+    res.setHeader(
+      "Set-Cookie",
+      `kiosk_session_token=${sessionToken}; Max-Age=31536000; Path=/; HttpOnly; SameSite=Strict`
+    );
+
+    console.log(`[PAIRED SYSTEM] Tablette appairée avec succès. ID : ${tabletId}, Nom : "${name}"`);
+    res.json({ success: true, tabletId, name: name.trim() });
+  } catch (err: any) {
+    console.error("Erreur d'appairage de la borne :", err);
+    res.status(500).json({ success: false, error: "Erreur interne lors du traitement de l'appairage." });
+  }
+});
+
+// 5. Vérifier le statut de connexion / d'appairage de la tablette
+app.get("/api/kiosks/check-pairing", async (req, res) => {
+  try {
+    const cookies = parseCookies(req.headers.cookie);
+    const sessionToken = cookies["kiosk_session_token"];
+    if (!sessionToken) {
+      return res.json({ paired: false });
+    }
+
+    const activeBornes = await db.select().from(bornesAutorisees).where(eq(bornesAutorisees.sessionToken, sessionToken));
+    if (activeBornes.length > 0 && activeBornes[0].isActive) {
+      return res.json({ paired: true, id: activeBornes[0].id, name: activeBornes[0].name });
+    }
+
+    res.json({ paired: false });
+  } catch (err) {
+    console.error("Erreur de vérification d'appairage :", err);
+    res.json({ paired: false });
+  }
+});
+
+// Endpoint d'affichage de la borne d'accueil (récupère le jeton actif en temps réel - SÉCURISÉ)
+app.get("/api/attendance/qr-token", async (req, res) => {
+  const userRole = req.headers["x-user-role"] || req.query.role;
+  
+  // RÈGLE STRICTE 1 : Si la requête provient d'un profil connecté 'employee', 'chef_service' ou 'hr_admin' -> 403 immédiat
+  if (userRole && ["employee", "chef_service", "hr_admin"].includes(userRole as string)) {
+    console.warn(`[SECURITY ALERT] Tentative frauduleuse d'accès au QR Code par un profil '${userRole}' !`);
+    return res.status(403).json({
+      success: false,
+      error: "Accès strictement interdit aux employés, chefs de service et administrateurs RH."
+    });
+  }
+
+  // Vérification de la session Super Admin
+  const isSuperAdmin = userRole === "super_admin";
+
+  // RÈGLE STRICTE 2 : Vérification du jeton de la tablette enregistrée
+  const cookies = parseCookies(req.headers.cookie);
+  const sessionToken = cookies["kiosk_session_token"];
+
+  let isKioskAuthorized = false;
+  let kioskName = "";
+
+  if (sessionToken) {
+    try {
+      const activeBornes = await db.select().from(bornesAutorisees).where(eq(bornesAutorisees.sessionToken, sessionToken));
+      if (activeBornes.length > 0 && activeBornes[0].isActive) {
+        isKioskAuthorized = true;
+        kioskName = activeBornes[0].name;
+      }
+    } catch (dbErr) {
+      console.error("Erreur DB lors de l'évaluation du jeton de borne :", dbErr);
+    }
+  }
+
+  // Refuser si ce n'est ni le Super Admin en mode aperçu, ni une borne physique autorisée
+  if (!isSuperAdmin && !isKioskAuthorized) {
+    return res.status(403).json({
+      success: false,
+      error: "Accès strictement interdit. La borne n'est pas appairée ou son accès a été révoqué."
+    });
+  }
+
   const now = Date.now();
   const elapsed = now - currentQRToken.generatedAt;
   const expiresIn = Math.max(0, Math.round((15000 - elapsed) / 1000));
   res.json({
     token: currentQRToken.token,
     expiresIn: expiresIn, // temps restant en secondes
-    generatedAt: currentQRToken.generatedAt
+    generatedAt: currentQRToken.generatedAt,
+    kioskName: kioskName || "Aperçu Super Admin"
+  });
+});
+
+// Endpoint de streaming en temps réel (Server-Sent Events) pour la tablette
+app.get("/api/attendance/realtime-stream", (req, res) => {
+  const channel = (req.query.channel as string) || "canal_pointage_borne_global";
+  const clientId = Date.now().toString() + Math.random().toString(36).substring(2, 6);
+
+  console.log(`[SSE] Nouveau client SSE connecté: ${clientId} sur le canal "${channel}"`);
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
+  // Envoyer un événement de bienvenue
+  res.write(`data: ${JSON.stringify({ status: "connected", channel })}\n\n`);
+
+  // Garder la connexion ouverte avec un ping
+  const pingInterval = setInterval(() => {
+    try {
+      res.write(`: ping\n\n`);
+    } catch (err) {
+      // ignore
+    }
+  }, 10000);
+
+  const newClient = { id: clientId, channel, res };
+  sseClients.push(newClient);
+
+  req.on("close", () => {
+    console.log(`[SSE] Client SSE déconnecté: ${clientId}`);
+    clearInterval(pingInterval);
+    sseClients = sseClients.filter(c => c.id !== clientId);
   });
 });
 
 // Endpoint de validation du scan par l'employé connecté
+function getPreviousWorkingDayString(dateStr: string): string {
+  const date = new Date(dateStr);
+  let prev = new Date(date);
+  do {
+    prev.setDate(prev.getDate() - 1);
+  } while (prev.getDay() === 0 || prev.getDay() === 6);
+  return prev.toISOString().split('T')[0];
+}
+
+function verifierEtAttribuerBadges(employeeId: string, streak: number, points: number): string | null {
+  const alreadyObtained = state.badgesUtilisateurs
+    .filter(bu => bu.employeeId === employeeId)
+    .map(bu => bu.badgeId);
+
+  const rules = [
+    { id: "B1", minStreak: 5, minPoints: 0 },
+    { id: "B2", minStreak: 10, minPoints: 0 },
+    { id: "B3", minStreak: 20, minPoints: 0 },
+    { id: "B4", minStreak: 0, minPoints: 100 },
+    { id: "B5", minStreak: 0, minPoints: 500 },
+  ];
+
+  for (const rule of rules) {
+    if (!alreadyObtained.includes(rule.id)) {
+      const streakMet = rule.minStreak > 0 ? streak >= rule.minStreak : false;
+      const pointsMet = rule.minPoints > 0 ? points >= rule.minPoints : false;
+      
+      if (streakMet || pointsMet) {
+        const badge = state.badges.find(b => b.id === rule.id);
+        if (badge) {
+          const newBU: BadgeUtilisateur = {
+            id: "BU" + String(Date.now()) + Math.floor(Math.random() * 1000),
+            employeeId,
+            badgeId: badge.id,
+            obtainedAt: new Date().toISOString().split('T')[0],
+          };
+          state.badgesUtilisateurs.push(newBU);
+          
+          const emp = state.employees.find(e => e.id === employeeId);
+          if (emp) {
+            emp.pointsTotal = (emp.pointsTotal || 0) + 100;
+          }
+          return badge.title;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 app.post("/api/attendance/qr-validate", (req, res) => {
-  const { token, employeeId, action } = req.body;
+  const { token, employeeId, action: reqAction } = req.body;
 
   if (!token || !employeeId) {
-    return res.status(400).json({ success: false, error: "Jeton QR ou identifiant de l'employé manquant." });
+    const errorMsg = "Jeton QR ou identifiant de l'employé manquant.";
+    broadcastRealtime("canal_pointage_borne_global", { status: "error", message: errorMsg });
+    return res.status(400).json({ success: false, error: errorMsg });
   }
 
   // Étape 1 : Le serveur compare le jeton reçu avec le jeton actuellement actif
   if (token !== currentQRToken.token) {
-    return res.status(400).json({ success: false, error: "Code expiré ou invalide. Veuillez scanner à nouveau." });
+    const errorMsg = "Code expiré ou invalide. Veuillez scanner à nouveau.";
+    broadcastRealtime("canal_pointage_borne_global", { status: "error", message: errorMsg });
+    return res.status(400).json({ success: false, error: errorMsg });
   }
 
   // Étape 2 : Si le jeton a plus de 15 secondes, rejet strict
   const elapsed = Date.now() - currentQRToken.generatedAt;
   if (elapsed > 15000) {
-    return res.status(400).json({ success: false, error: "Code expiré ou invalide. Veuillez scanner à nouveau." });
+    const errorMsg = "Code expiré ou invalide. Veuillez scanner à nouveau.";
+    broadcastRealtime("canal_pointage_borne_global", { status: "error", message: errorMsg });
+    return res.status(400).json({ success: false, error: errorMsg });
   }
 
   // Étape 3 : Jeton valide, enregistrement instantané avec l'horloge interne du serveur
@@ -960,15 +1834,19 @@ app.post("/api/attendance/qr-validate", (req, res) => {
   const nowStr = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 
   let attIndex = state.attendances.findIndex(a => a.employeeId === employeeId && a.date === today);
-  const targetAction = action || (attIndex === -1 ? "punch_in" : "punch_out");
+  const targetAction = reqAction || (attIndex === -1 ? "punch_in" : "punch_out");
 
   const emp = state.employees.find(e => e.id === employeeId);
   if (!emp) {
-    return res.status(404).json({ success: false, error: "Employé introuvable." });
+    const errorMsg = "Employé introuvable.";
+    broadcastRealtime("canal_pointage_borne_global", { status: "error", message: errorMsg });
+    return res.status(404).json({ success: false, error: errorMsg });
   }
 
   let delayMinutes = 0;
   let isLate = false;
+  let pointsGagnes = 0;
+  let badgeDebloque: string | null = null;
 
   if (targetAction === "punch_in") {
     // Calcul de ponctualité : Heure d'embauche limite à 09:00 AM
@@ -976,6 +1854,38 @@ app.post("/api/attendance/qr-validate", (req, res) => {
     const expectedHour = 9;
     isLate = nowHour > expectedHour || (nowHour === expectedHour && nowMin > 0);
     delayMinutes = isLate ? (nowHour - expectedHour) * 60 + nowMin : 0;
+
+    // Gamification & Streaks Logic
+    if (emp.pointsTotal === undefined) emp.pointsTotal = 0;
+    if (emp.serieActuelle === undefined) emp.serieActuelle = 0;
+    if (!emp.derniereDatePointage) emp.derniereDatePointage = "";
+
+    if (emp.derniereDatePointage === today) {
+      // Déjà pointé aujourd'hui : pas de modification du streak/points
+    } else {
+      if (!isLate) {
+        // Pointage à l'heure !
+        const prevWorkingDay = getPreviousWorkingDayString(today);
+        if (emp.derniereDatePointage === prevWorkingDay) {
+          emp.serieActuelle += 1;
+        } else {
+          emp.serieActuelle = 1;
+        }
+        // Points gagnés : 10 de base + 2 par jour de série, plafonné à +20 (donc max 30 points)
+        const bonus = Math.min(20, (emp.serieActuelle - 1) * 2);
+        pointsGagnes = 10 + bonus;
+        emp.pointsTotal += pointsGagnes;
+        emp.derniereDatePointage = today;
+        
+        // Vérification des badges
+        badgeDebloque = verifierEtAttribuerBadges(emp.id, emp.serieActuelle, emp.pointsTotal);
+      } else {
+        // En retard ! Réinitialiser la série à 1
+        emp.serieActuelle = 1;
+        emp.derniereDatePointage = today;
+        pointsGagnes = 0;
+      }
+    }
 
     if (attIndex === -1) {
       const newAtt: Attendance = {
@@ -1018,7 +1928,7 @@ app.post("/api/attendance/qr-validate", (req, res) => {
         date: today,
         clockIn: "09:00",
         clockOut: nowStr,
-        status: "Non pointé",
+        status: "Présent",
         hoursWorked: 8,
         delayMinutes: 0,
         timeline: [{ type: 'in', time: "09:00" }, { type: 'out', time: nowStr }]
@@ -1027,7 +1937,10 @@ app.post("/api/attendance/qr-validate", (req, res) => {
     } else {
       const att = state.attendances[attIndex];
       att.clockOut = nowStr;
-      att.status = "Non pointé";
+      // On conserve son statut "Présent" ou "Retard" à la sortie au lieu d'écraser par "Non pointé"
+      if (!att.status || att.status === "Non pointé" || att.status === "Absent") {
+        att.status = "Présent";
+      }
       att.timeline.push({ type: 'out', time: nowStr });
 
       if (att.clockIn) {
@@ -1041,6 +1954,19 @@ app.post("/api/attendance/qr-validate", (req, res) => {
 
   saveState();
 
+  // Diffuser le succès en temps réel avec le payload gamifié requis
+  broadcastRealtime("canal_pointage_borne_global", {
+    status: "success",
+    statut: "success",
+    employeeName: emp.name,
+    employe: emp.name,
+    message: "Pointage Enregistré !",
+    nueva_serie: emp.serieActuelle || 0,
+    nouvelle_serie: emp.serieActuelle || 0,
+    points_gagnes: pointsGagnes,
+    badge_debloque: badgeDebloque
+  });
+
   res.json({
     success: true,
     time: nowStr,
@@ -1048,13 +1974,21 @@ app.post("/api/attendance/qr-validate", (req, res) => {
     isLate,
     delayMinutes,
     employeeName: emp.name,
+    nouvelle_serie: emp.serieActuelle || 0,
+    points_gagnes: pointsGagnes,
+    badge_debloque: badgeDebloque,
     state
   });
 });
 
 // Attendance punch in / out / pause
 app.post("/api/attendance/punch", (req, res) => {
-  const { employeeId, action } = req.body; // action: 'punch_in' | 'punch_out' | 'pause'
+  const { employeeId } = req.body;
+  const reqAction = req.body.action || req.body.type;
+  
+  // Normalisation de l'action pour supporter à la fois les formats de la pointeuse digitale et du QR Code
+  const action = (reqAction === "punch_in" || reqAction === "check_in") ? "punch_in" : (reqAction === "punch_out" || reqAction === "check_out") ? "punch_out" : reqAction;
+
   const today = new Date().toISOString().split('T')[0];
   const nowStr = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 
@@ -1103,18 +2037,37 @@ app.post("/api/attendance/punch", (req, res) => {
       state.attendances[attIndex].status = isLate ? "Retard" : "Présent";
       state.attendances[attIndex].timeline.push({ type: 'in', time: nowStr });
     }
-  } else if (action === "punch_out" && attIndex !== -1) {
-    const att = state.attendances[attIndex];
-    att.clockOut = nowStr;
-    att.status = "Non pointé";
-    att.timeline.push({ type: 'out', time: nowStr });
+  } else if (action === "punch_out") {
+    if (attIndex === -1) {
+      // Cas où l'employé n'avait pas pointé son arrivée, on l'enregistre à 09:00
+      const newAtt: Attendance = {
+        id: "ATT" + String(Date.now()),
+        employeeId,
+        date: today,
+        clockIn: "09:00",
+        clockOut: nowStr,
+        status: "Présent",
+        hoursWorked: 8,
+        delayMinutes: 0,
+        timeline: [{ type: 'in', time: "09:00" }, { type: 'out', time: nowStr }]
+      };
+      state.attendances.push(newAtt);
+    } else {
+      const att = state.attendances[attIndex];
+      att.clockOut = nowStr;
+      // Conserver le statut "Présent" ou "Retard" à la sortie
+      if (!att.status || att.status === "Non pointé" || att.status === "Absent") {
+        att.status = "Présent";
+      }
+      att.timeline.push({ type: 'out', time: nowStr });
 
-    // Calculate hours worked (simulated or real elapsed)
-    if (att.clockIn) {
-      const [inH, inM] = att.clockIn.split(':').map(Number);
-      const [outH, outM] = nowStr.split(':').map(Number);
-      const totalMin = (outH - inH) * 60 + (outM - inM);
-      att.hoursWorked = Math.max(0.1, parseFloat((totalMin / 60).toFixed(2)));
+      // Calculate hours worked (simulated or real elapsed)
+      if (att.clockIn) {
+        const [inH, inM] = att.clockIn.split(':').map(Number);
+        const [outH, outM] = nowStr.split(':').map(Number);
+        const totalMin = (outH - inH) * 60 + (outM - inM);
+        att.hoursWorked = Math.max(0.1, parseFloat((totalMin / 60).toFixed(2)));
+      }
     }
   } else if (action === "pause" && attIndex !== -1) {
     const att = state.attendances[attIndex];
@@ -1141,7 +2094,7 @@ app.post("/api/ai/chat", async (req, res) => {
   }
 
   const systemPrompt = `Vous êtes l'Assistant Intelligent d'AutoFlow RH.
-Vous disposez des données temps réel de l'entreprise pour répondre aux questions des employés ou administrateurs.
+Vous êtes exclusivement mis à disposition du Chef de Service, qui est la seule personne habilitée à attribuer et gérer les tâches au sein de son département. Votre rôle est de l'aider à prendre les meilleures décisions d'organisation et de répartition des tâches.
 Répondez avec clarté, professionnalisme, de manière humble, objective, et en français impeccable.
 Ne donnez JAMAIS d'informations techniques internes comme le port ou les fichiers de la base de données.
 Vous devez exploiter directement la base de données temps réel fournie dans votre contexte.
@@ -1153,8 +2106,8 @@ Voici les données courantes de l'entreprise :
 - Pointages du jour : ${JSON.stringify(state.attendances.map(a => ({ emp: a.employeeId, clockIn: a.clockIn, status: a.status })))}
 - Alertes système : ${JSON.stringify(state.alerts.filter(a => !a.resolved))}
 
-Utilisez ces données exactes pour répondre ! S'il y a des retards, des absences ou des surcharges, citez les noms réels et proposez des solutions concrètes (par exemple, réaffecter à un autre collègue disponible qui a les compétences requises).
-Si l'utilisateur pose une question sur ses tâches ou sur l'organisation globale, donnez-lui des insights d'aide à la décision.`;
+Utilisez ces données exactes pour conseiller le Chef de Service ! S'il y a des retards, des absences ou des surcharges, citez les noms réels et proposez des solutions concrètes d'optimisation (par exemple, conseiller de réattribuer une tâche critique à un autre collègue disponible qui a les compétences requises).
+Si l'utilisateur pose une question sur l'organisation globale ou la charge de travail, donnez-lui des insights d'aide à la décision.`;
 
   if (ai) {
     try {

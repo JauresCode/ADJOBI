@@ -1,11 +1,12 @@
 import React, { useState } from "react";
 import {
-  Search, Plus, Bell, Settings, Calendar, User, Sparkles, ShieldAlert,
+  Search, Plus, Bell, Settings, Calendar, User, ShieldAlert,
   Cpu, CheckCircle2, AlertCircle, Clock, Trash2, Send, BarChart3,
   Layers, CheckSquare, Award, MessageSquare, BookOpen, AlertTriangle,
   Users, ClipboardList
 } from "lucide-react";
 import { Employee, Task, AIDecisionLog, UserRole } from "../types";
+import aiHumanSynergyImg from "../assets/images/ai_human_synergy_1782327559334.jpg";
 
 interface ChefServiceViewProps {
   tasks: Task[];
@@ -123,7 +124,8 @@ export default function ChefServiceView({
   };
 
   return (
-    <div className="flex-1 bg-[#f8faf9] h-full p-4 md:p-8 overflow-y-auto relative font-sans">
+    <div className="flex-1 bg-[#f8faf9] h-full p-4 md:p-8 overflow-y-auto relative font-sans flex flex-col justify-between">
+      <div className="flex-1 flex flex-col">
       
       {/* HEADER SECTION */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-8">
@@ -232,7 +234,7 @@ export default function ChefServiceView({
               {autoAssign && title && (
                 <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
                   <div className="flex items-center gap-1.5 text-emerald-800 text-[10px] font-bold uppercase tracking-wider">
-                    <Sparkles className="w-3.5 h-3.5 text-brand-neon animate-pulse" />
+                    <Cpu className="w-3.5 h-3.5 text-brand-neon animate-pulse" />
                     <span>Recommandation Assistant Virtuel</span>
                   </div>
                   {(() => {
@@ -321,18 +323,33 @@ export default function ChefServiceView({
               </div>
             </div>
 
-            <div className="lg:col-span-5 bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
-              <h3 className="font-display font-bold text-gray-900 text-sm mb-4">Derniers Arbitrages IA</h3>
-              <div className="space-y-3">
-                {decisionLogs.slice(0, 2).map((log) => (
-                  <div key={log.id} className="p-3 rounded-xl bg-gray-50 border border-gray-100 text-xs">
-                    <p className="font-bold text-gray-800 flex items-center gap-1">
-                      <Sparkles className="w-3.5 h-3.5 text-brand-neon shrink-0" />
-                      {log.title}
-                    </p>
-                    <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">{log.description}</p>
+            <div className="lg:col-span-5 bg-white p-0 rounded-3xl border border-gray-100 shadow-sm overflow-hidden flex flex-col justify-between">
+              <div className="p-6">
+                <h3 className="font-display font-bold text-gray-900 text-sm mb-1">Derniers Arbitrages IA</h3>
+                <p className="text-xs text-gray-400 mb-4">Synergie Homme-IA en temps réel</p>
+                <div className="mb-4 rounded-2xl overflow-hidden border border-gray-100 relative group">
+                  <img
+                    src={aiHumanSynergyImg}
+                    alt="Synergie Humain & IA"
+                    referrerPolicy="no-referrer"
+                    className="w-full aspect-[16/9] object-cover transition-transform duration-500 group-hover:scale-105"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent flex items-end p-3">
+                    <span className="text-[10px] font-mono text-brand-neon font-bold tracking-wider uppercase">Moteur Décisionnel AutoFlow CI</span>
                   </div>
-                ))}
+                </div>
+                
+                <div className="space-y-3">
+                  {decisionLogs.slice(0, 2).map((log) => (
+                    <div key={log.id} className="p-3 rounded-xl bg-gray-50 border border-gray-100 text-xs">
+                      <p className="font-bold text-gray-800 flex items-center gap-1">
+                        <Cpu className="w-3.5 h-3.5 text-brand-neon shrink-0" />
+                        {log.title}
+                      </p>
+                      <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">{log.description}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -558,7 +575,7 @@ export default function ChefServiceView({
               <div className="space-y-4 text-xs text-gray-600 leading-relaxed">
                 <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
                   <h4 className="font-bold text-gray-800 mb-1 flex items-center gap-1">
-                    <Sparkles className="w-4 h-4 text-brand-neon animate-pulse" /> Recommandations Virtuelles IA
+                    <Cpu className="w-4 h-4 text-brand-neon animate-pulse" /> Recommandations Virtuelles IA
                   </h4>
                   <p>
                     L'IA calcule l'indice d'adéquation de chaque ingénieur en fonction des technologies requises (ex: React, Node.js, CSS) et de sa charge globale actuelle (en pourcentage de sprint). Préférez toujours l'auto-assignation pour équilibrer la fatigue et le stress.
@@ -734,6 +751,25 @@ export default function ChefServiceView({
           </div>
         </div>
       )}
+
+      </div>
+
+      {/* Footer */}
+      <footer className="mt-16 border-t border-gray-200/80 pt-6 pb-2 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-gray-400 shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="font-mono font-bold text-gray-500 uppercase tracking-wider text-[10px]">AutoFlow Automation</span>
+          <span className="w-1 h-1 bg-gray-300 rounded-full" />
+          <span>© 2026 Tous droits réservés.</span>
+        </div>
+        <div className="flex items-center gap-3 font-mono text-[10px] text-gray-500">
+          <span>Infrastruct : Cloud Run (europe-west2)</span>
+          <span className="w-1 h-1 bg-gray-300 rounded-full" />
+          <span className="text-emerald-600 font-semibold flex items-center gap-1">
+            <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+            Base PostgreSQL Active (Drizzle)
+          </span>
+        </div>
+      </footer>
 
     </div>
   );

@@ -1,32 +1,201 @@
 import React, { useState, useEffect } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { Clock, ShieldCheck, UserCheck, RefreshCw, Smartphone, CheckCircle, AlertTriangle } from "lucide-react";
+import { Clock, ShieldCheck, UserCheck, RefreshCw, Smartphone, CheckCircle, AlertTriangle, XCircle } from "lucide-react";
 import { Employee, Attendance } from "../types";
 import Logo, { getLogoSvgDataUrl } from "./Logo";
+import { createClient } from "@supabase/supabase-js";
+import { motion, AnimatePresence } from "motion/react";
+
+// Web Audio API Beep Generators for Kiosk feedback
+const playValidationBeep = () => {
+  try {
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(880, ctx.currentTime); // A5 note - crisp pleasant beep
+    gain.gain.setValueAtTime(0.08, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
+    
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    
+    osc.start();
+    osc.stop(ctx.currentTime + 0.15);
+  } catch (err) {
+    console.error("Erreur Web Audio:", err);
+  }
+};
+
+const playErrorBeep = () => {
+  try {
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(220, ctx.currentTime); // Low warning buzz
+    gain.gain.setValueAtTime(0.1, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.25);
+    
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    
+    osc.start();
+    osc.stop(ctx.currentTime + 0.25);
+  } catch (err) {
+    console.error("Erreur Web Audio:", err);
+  }
+};
 
 interface BorneQRViewProps {
   employees: Employee[];
   attendances: Attendance[];
   onRefreshState: () => void;
+  currentUserRole?: string;
 }
 
-export default function BorneQRView({ employees, attendances, onRefreshState }: BorneQRViewProps) {
+export default function BorneQRView({ employees, attendances, onRefreshState, currentUserRole }: BorneQRViewProps) {
   const [token, setToken] = useState<string>("");
   const [secondsLeft, setSecondsLeft] = useState<number>(15);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
   const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string>("");
+  const [kioskName, setKioskName] = useState<string>("");
   const [recentPunches, setRecentPunches] = useState<Array<{ employeeName: string; avatar: string; time: string; status: string }>>([]);
+
+  const [feedback, setFeedback] = useState<{
+    status: "success" | "error";
+    employeeName?: string;
+    message?: string;
+  } | null>(null);
+
+  // Réception des événements de pointage en temps réel (Supabase Realtime ou SSE Fallback)
+  useEffect(() => {
+    const channelName = "canal_pointage_borne_global";
+    const supabaseUrl = (import.meta as any).env?.VITE_SUPABASE_URL || "";
+    const supabaseAnonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || "";
+
+    let supabaseChannel: any = null;
+    let sseSource: EventSource | null = null;
+
+    const handleRealtimeMessage = (data: { status: string; employeeName?: string; message?: string }) => {
+      if (data.status === "success") {
+        setFeedback({
+          status: "success",
+          employeeName: data.employeeName,
+          message: data.message || "Pointage Enregistré !"
+        });
+        playValidationBeep();
+        onRefreshState(); // Recharge les pointages pour le flux en direct
+      } else if (data.status === "error") {
+        setFeedback({
+          status: "error",
+          message: data.message || "Erreur de pointage"
+        });
+        playErrorBeep();
+      }
+    };
+
+    if (supabaseUrl && supabaseAnonKey) {
+      console.log(`[Realtime] Connexion Supabase Realtime sur le canal "${channelName}"...`);
+      try {
+        const supabaseClient = createClient(supabaseUrl, supabaseAnonKey);
+        supabaseChannel = supabaseClient.channel(channelName, {
+          config: {
+            broadcast: { self: true },
+          }
+        });
+
+        supabaseChannel
+          .on("broadcast", { event: "pointage" }, (payload: any) => {
+            console.log("[Realtime] Message reçu via Supabase Realtime:", payload);
+            if (payload && payload.payload) {
+              handleRealtimeMessage(payload.payload);
+            }
+          })
+          .subscribe((status: string) => {
+            console.log(`[Realtime] Statut abonnement Supabase: ${status}`);
+          });
+      } catch (err) {
+        console.error("[Realtime] Erreur lors de l'initialisation de Supabase:", err);
+      }
+    } else {
+      console.log(`[Realtime] Supabase non configuré. Lancement du canal temps réel de secours (SSE)...`);
+      try {
+        sseSource = new EventSource(`/api/attendance/realtime-stream?channel=${channelName}`);
+        
+        sseSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.status === "success" || data.status === "error") {
+              console.log("[Realtime] Message reçu via SSE de secours:", data);
+              handleRealtimeMessage(data);
+            }
+          } catch (err) {
+            console.error("[Realtime] Erreur parsing SSE:", err);
+          }
+        };
+
+        sseSource.onerror = (err) => {
+          console.log("[Realtime] Connexion SSE déconnectée. Reconnexion automatique...", err);
+        };
+      } catch (err) {
+        console.error("[Realtime] Erreur lors de l'initialisation du canal SSE:", err);
+      }
+    }
+
+    return () => {
+      if (supabaseChannel) {
+        try {
+          const supabaseClient = createClient(supabaseUrl, supabaseAnonKey);
+          supabaseClient.removeChannel(supabaseChannel);
+        } catch (err) {
+          // ignore
+        }
+      }
+      if (sseSource) {
+        sseSource.close();
+      }
+    };
+  }, [onRefreshState]);
+
+  // Réinitialisation automatique du feedback après 3 secondes
+  useEffect(() => {
+    if (feedback) {
+      const timer = setTimeout(() => {
+        setFeedback(null);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [feedback]);
 
   const fetchToken = async () => {
     try {
-      const res = await fetch("/api/attendance/qr-token");
+      const url = currentUserRole 
+        ? `/api/attendance/qr-token?role=${currentUserRole}` 
+        : `/api/attendance/qr-token`;
+      
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         setToken(data.token);
         setSecondsLeft(data.expiresIn || 15);
+        setKioskName(data.kioskName || "");
+        setError("");
+      } else {
+        const data = await res.json().catch(() => ({ error: "Erreur d'accès à la borne." }));
+        setError(data.error || "Accès refusé.");
+        setToken("");
       }
     } catch (err) {
       console.error("Erreur de récupération du jeton QR:", err);
+      setError("Erreur réseau ou serveur inaccessible.");
     } finally {
       setLoading(false);
     }
@@ -99,7 +268,9 @@ export default function BorneQRView({ employees, attendances, onRefreshState }: 
         <div className="flex items-center justify-center gap-3 mb-3">
           <Logo variant="dark" className="h-11" showTagline={false} />
           <div className="h-6 w-px bg-white/20 mx-1.5" />
-          <span className="text-[10px] text-brand-neon font-mono font-bold tracking-widest uppercase">Borne de Pointage Officielle</span>
+          <span className="text-[10px] text-brand-neon font-mono font-bold tracking-widest uppercase">
+            Borne de Pointage Officielle {kioskName ? `— ${kioskName}` : ""}
+          </span>
         </div>
         <p className="text-gray-400 text-sm">
           Présentez le code QR ci-dessous devant votre appareil mobile pour enregistrer votre arrivée ou départ de l'entreprise instantanément.
@@ -139,6 +310,12 @@ export default function BorneQRView({ employees, attendances, onRefreshState }: 
               <div className="w-64 h-64 flex flex-col items-center justify-center text-brand-dark">
                 <RefreshCw className="w-10 h-10 animate-spin text-brand-primary mb-3" />
                 <span className="text-xs font-semibold">Génération de la clé...</span>
+              </div>
+            ) : error ? (
+              <div className="w-64 h-64 flex flex-col items-center justify-center text-red-500 p-4">
+                <AlertTriangle className="w-12 h-12 mb-3 text-red-500 animate-pulse" />
+                <span className="text-xs font-bold text-center uppercase tracking-wider text-red-500">Accès Refusé</span>
+                <span className="text-[11px] text-gray-600 text-center mt-2 font-mono font-medium leading-relaxed">{error}</span>
               </div>
             ) : token ? (
               <QRCodeSVG
@@ -261,6 +438,93 @@ export default function BorneQRView({ employees, attendances, onRefreshState }: 
         </div>
 
       </div>
+
+      {/* Fullscreen Success / Error Real-time Feedback Overlay */}
+      <AnimatePresence>
+        {feedback && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.25 }}
+            className={`fixed inset-0 z-50 flex flex-col items-center justify-center p-6 text-center ${
+              feedback.status === "success"
+                ? "bg-gradient-to-br from-[#065f46] to-[#0f766e]"
+                : "bg-gradient-to-br from-[#9f1239] to-[#be123c]"
+            }`}
+          >
+            {/* Ambient Background Pulse */}
+            <div className="absolute inset-0 bg-[linear-gradient(to_right,#ffffff05_1px,transparent_1px),linear-gradient(to_bottom,#ffffff05_1px,transparent_1px)] bg-[size:3rem_3rem]" />
+            <div className="absolute w-96 h-96 rounded-full bg-white/5 blur-3xl animate-pulse pointer-events-none" />
+
+            <div className="z-10 max-w-lg space-y-6">
+              {/* Animated Icon */}
+              <motion.div
+                initial={{ scale: 0, rotate: -30 }}
+                animate={{ scale: 1, rotate: 0 }}
+                transition={{ delay: 0.1, type: "spring", stiffness: 200 }}
+                className="flex justify-center"
+              >
+                {feedback.status === "success" ? (
+                  <div className="p-6 bg-white/10 rounded-full border-4 border-white/20 shadow-2xl">
+                    <CheckCircle className="w-24 h-24 text-white" />
+                  </div>
+                ) : (
+                  <div className="p-6 bg-white/10 rounded-full border-4 border-white/20 shadow-2xl">
+                    <XCircle className="w-24 h-24 text-white" />
+                  </div>
+                )}
+              </motion.div>
+
+              {/* Text Information */}
+              <div className="space-y-3">
+                <motion.h2
+                  initial={{ y: 20, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  transition={{ delay: 0.2 }}
+                  className="text-4xl md:text-5xl font-display font-black text-white tracking-tight uppercase"
+                >
+                  {feedback.status === "success" ? "Pointage Enregistré !" : "Pointage Rejeté !"}
+                </motion.h2>
+
+                {feedback.status === "success" ? (
+                  <motion.div
+                    initial={{ y: 20, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ delay: 0.3 }}
+                    className="bg-white/10 backdrop-blur-md rounded-3xl p-6 border border-white/15 shadow-xl max-w-sm mx-auto"
+                  >
+                    <span className="text-xs text-emerald-200 uppercase tracking-widest font-mono font-bold">Identité confirmée</span>
+                    <h3 className="text-2xl font-bold text-white mt-1">{feedback.employeeName}</h3>
+                    <p className="text-xs text-emerald-100 mt-2 font-medium">✓ Présence validée par le serveur central</p>
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    initial={{ y: 20, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ delay: 0.3 }}
+                    className="bg-white/10 backdrop-blur-md rounded-3xl p-6 border border-white/15 shadow-xl max-w-sm mx-auto"
+                  >
+                    <span className="text-xs text-rose-200 uppercase tracking-widest font-mono font-bold">Raison du rejet</span>
+                    <p className="text-sm font-bold text-white mt-2 leading-relaxed">{feedback.message}</p>
+                    <p className="text-[10px] text-rose-200 mt-3 font-medium">Veuillez rafraîchir l'application smartphone et réessayer.</p>
+                  </motion.div>
+                )}
+              </div>
+
+              {/* Progress counter */}
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.4 }}
+                className="text-[11px] font-mono text-white/50"
+              >
+                Retour au QR Code de la borne dans quelques secondes...
+              </motion.div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
     </div>
   );

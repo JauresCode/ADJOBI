@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Employee, Task, LeaveRequest, Attendance, SystemAlert, AIDecisionLog, UserRole } from "./types";
+import { Employee, Task, LeaveRequest, Attendance, SystemAlert, AIDecisionLog, UserRole, Badge, BadgeUtilisateur } from "./types";
 import Sidebar from "./components/Sidebar";
 import toast, { Toaster } from "react-hot-toast";
 import LoginView from "./components/LoginView";
@@ -9,9 +9,10 @@ import AdminRHView from "./components/AdminRHView";
 import ChefServiceView from "./components/ChefServiceView";
 import EmployeeView from "./components/EmployeeView";
 import BorneQRView from "./components/BorneQRView";
+import BorneInitialisationView from "./components/BorneInitialisationView";
 import MyProfileView from "./components/MyProfileView";
 import AIAssistantDrawer from "./components/AIAssistantDrawer";
-import { Sparkles, User, RefreshCw, AlertTriangle, Play, Menu, X } from "lucide-react";
+import { Cpu, User, RefreshCw, AlertTriangle, Play, Menu, X } from "lucide-react";
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<Employee | null>(null);
@@ -22,6 +23,8 @@ export default function App() {
     attendances: Attendance[];
     alerts: SystemAlert[];
     decisionLogs: AIDecisionLog[];
+    badges?: Badge[];
+    badgesUtilisateurs?: BadgeUtilisateur[];
   } | null>(null);
 
   const [activeTab, setActiveTab] = useState("dashboard");
@@ -524,6 +527,17 @@ export default function App() {
     }
   };
 
+  const path = window.location.pathname;
+
+  if (path === "/borne/initialisation") {
+    return (
+      <>
+        <BorneInitialisationView />
+        <Toaster position="top-right" />
+      </>
+    );
+  }
+
   if (loading || !state) {
     return (
       <div className="min-h-screen bg-radial from-brand-medium via-[#010c0a] to-[#000504] flex flex-col items-center justify-center p-4">
@@ -540,47 +554,23 @@ export default function App() {
     );
   }
 
+  if (path === "/borne/pointage") {
+    return (
+      <div className="min-h-screen bg-brand-dark flex flex-col justify-center items-center relative overflow-hidden">
+        <BorneQRView
+          employees={state.employees}
+          attendances={state.attendances}
+          onRefreshState={fetchState}
+          currentUserRole={undefined}
+        />
+        <Toaster position="top-right" />
+      </div>
+    );
+  }
+
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-radial from-brand-medium via-[#010c0a] to-[#000504] text-gray-900 flex flex-col relative overflow-y-auto font-sans">
-        {/* 5-Role Demo Control Room Selector Capsule (Phenomenal Evaluator UX!) */}
-        {demoBannerOpen && (
-          <div className="bg-brand-dark text-white border-b border-brand-primary/20 px-6 py-2.5 flex flex-col md:flex-row items-center justify-between gap-3 relative z-30 shadow-md">
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-brand-neon animate-pulse" />
-              <span className="text-[10px] md:text-xs font-bold uppercase tracking-widest text-brand-neon">Console de Démo Multi-Rôles</span>
-              <span className="text-[9px] bg-brand-primary/60 border border-brand-neon/20 text-white font-semibold px-2 py-0.5 rounded">AUTOFLOW CONNECT</span>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-center gap-1.5">
-              {state.employees.map((emp) => {
-                let label = "";
-                if (emp.role === "super_admin") label = "Super Admin";
-                if (emp.role === "hr_admin") label = "Admin RH";
-                if (emp.role === "chef_service") label = "Chef Service";
-                if (emp.role === "employee") label = emp.id === "EMP007" ? "Lucas" : "Sarah";
-
-                return (
-                  <button
-                    key={emp.id}
-                    onClick={() => handleLogin(emp)}
-                    className="px-3 py-1 rounded-full text-[10px] font-bold tracking-wide transition-all border border-brand-primary/40 cursor-pointer bg-[#011410] hover:bg-brand-primary/40 text-gray-300 hover:text-white"
-                  >
-                    {label} ({emp.name.split(" ")[0]})
-                  </button>
-                );
-              })}
-            </div>
-
-            <button
-              onClick={() => setDemoBannerOpen(false)}
-              className="text-gray-400 hover:text-white text-xs font-bold hover:scale-105 transition-all cursor-pointer"
-            >
-              ✕
-            </button>
-          </div>
-        )}
-
         <LoginView onLoginSuccess={handleLogin} employeesList={state.employees} />
       </div>
     );
@@ -589,49 +579,6 @@ export default function App() {
   return (
     <div className="h-screen bg-[#f8faf9] text-gray-900 flex flex-col relative overflow-hidden font-sans">
       
-      {/* 5-Role Demo Control Room Selector Capsule (Phenomenal Evaluator UX!) */}
-      {demoBannerOpen && (
-        <div className="bg-brand-dark text-white border-b border-brand-primary/20 px-6 py-2.5 flex flex-col md:flex-row items-center justify-between gap-3 relative z-30 shadow-md shrink-0">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-brand-neon animate-pulse" />
-            <span className="text-[10px] md:text-xs font-bold uppercase tracking-widest text-brand-neon">Console de Démo Multi-Rôles</span>
-            <span className="text-[9px] bg-brand-primary/60 border border-brand-neon/20 text-white font-semibold px-2 py-0.5 rounded">AUTOFLOW CONNECT</span>
-          </div>
-
-          <div className="flex flex-wrap items-center justify-center gap-1.5">
-            {state.employees.map((emp) => {
-              let label = "";
-              if (emp.role === "super_admin") label = "Super Admin";
-              if (emp.role === "hr_admin") label = "Admin RH";
-              if (emp.role === "chef_service") label = "Chef Service";
-              if (emp.role === "employee") label = emp.id === "EMP007" ? "Lucas" : "Sarah";
-
-              const isCurrent = currentUser?.id === emp.id;
-              return (
-                <button
-                  key={emp.id}
-                  onClick={() => handleLogin(emp)}
-                  className={`px-3 py-1 rounded-full text-[10px] font-bold tracking-wide transition-all border cursor-pointer ${
-                    isCurrent
-                      ? "bg-brand-neon text-brand-dark border-brand-neon shadow-sm"
-                      : "bg-[#011410] border-brand-primary/40 hover:bg-brand-primary/40 text-gray-300 hover:text-white"
-                  }`}
-                >
-                  {label} ({emp.name.split(" ")[0]})
-                </button>
-              );
-            })}
-          </div>
-
-          <button
-            onClick={() => setDemoBannerOpen(false)}
-            className="text-gray-400 hover:text-white text-xs font-bold hover:scale-105 transition-all cursor-pointer"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
       {/* Mobile Top Header Bar */}
       <div className="md:hidden bg-brand-dark text-white px-4 py-3 flex items-center justify-between border-b border-brand-primary/20 shrink-0">
         <div className="flex items-center gap-3">
@@ -700,6 +647,7 @@ export default function App() {
             employees={state.employees}
             attendances={state.attendances}
             onRefreshState={fetchState}
+            currentUserRole={currentUser.role}
           />
         ) : activeTab === "profil" ? (
           <MyProfileView
@@ -770,8 +718,10 @@ export default function App() {
           </>
         )}
 
-        {/* Floating AI Assistant sliding Drawer */}
-        <AIAssistantDrawer onSendMessage={handleSendMessage} />
+        {/* Floating AI Assistant sliding Drawer - Uniquement disponible pour le Chef de Service (seul habilité à gérer et attribuer les tâches) */}
+        {currentUser?.role === "chef_service" && (
+          <AIAssistantDrawer onSendMessage={handleSendMessage} />
+        )}
       </div>
 
       {/* Système de notifications toasts */}

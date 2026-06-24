@@ -14,7 +14,7 @@ interface SidebarProps {
 export default function Sidebar({ currentUser, activeTab, setActiveTab, onLogout, onItemClick }: SidebarProps) {
   const menuItems = [
     { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
-    { id: "borne_qr", label: "Borne QR d'Accueil", icon: QrCode },
+    ...(currentUser.role === "super_admin" ? [{ id: "borne_qr", label: "Borne QR d'Accueil (Aperçu)", icon: QrCode }] : []),
     { id: "analyses", label: "Analyses", icon: BarChart3 },
     { id: "structure", label: "Structure", icon: Users },
     { id: "rapports", label: "Rapports", icon: FileText },

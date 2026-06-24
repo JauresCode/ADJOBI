@@ -1,10 +1,11 @@
 import React, { useState } from "react";
 import {
-  Search, Plus, Bell, Settings, Heart, Calendar, RefreshCw, Sparkles,
+  Search, Plus, Bell, Settings, Heart, Calendar, RefreshCw, Cpu,
   User, AlertTriangle, ShieldCheck, Check, X, Users, ClipboardList,
   Filter, CheckSquare, Award, Smartphone, HelpCircle, Phone, BookOpen
 } from "lucide-react";
 import { Employee, LeaveRequest, Attendance } from "../types";
+import hrCoachingImg from "../assets/images/hr_coaching_1782327543080.jpg";
 
 interface AdminRHViewProps {
   leaves: LeaveRequest[];
@@ -108,7 +109,8 @@ export default function AdminRHView({
   });
 
   return (
-    <div className="flex-1 bg-[#f8faf9] h-full p-4 md:p-8 overflow-y-auto relative font-sans">
+    <div className="flex-1 bg-[#f8faf9] h-full p-4 md:p-8 overflow-y-auto relative font-sans flex flex-col justify-between">
+      <div className="flex-1 flex flex-col">
       
       {/* HEADER SECTION */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-8">
@@ -336,7 +338,7 @@ export default function AdminRHView({
                     <div className="mt-4 pt-3 border-t border-gray-100 space-y-3">
                       <div className="bg-emerald-50/50 border border-emerald-500/10 p-2.5 rounded-xl">
                         <div className="flex items-center gap-1 text-emerald-800 text-[10px] font-bold uppercase tracking-wider mb-1">
-                          <Sparkles className="w-3.5 h-3.5 text-brand-neon" />
+                          <Cpu className="w-3.5 h-3.5 text-brand-neon" />
                           <span>Analyse d'impact IA</span>
                         </div>
                         <p className="text-[10px] text-emerald-950 leading-relaxed">
@@ -394,7 +396,7 @@ export default function AdminRHView({
           {reassignmentLogs.length > 0 && (
             <div className="bg-brand-dark border border-brand-primary/30 p-5 rounded-3xl text-white space-y-3">
               <div className="flex items-center gap-2">
-                <Sparkles className="w-5 h-5 text-brand-neon animate-pulse" />
+                <Cpu className="w-5 h-5 text-brand-neon animate-pulse" />
                 <h3 className="font-display font-bold text-sm uppercase tracking-wider text-brand-neon">Console d'Automate d'Attribution IA</h3>
               </div>
               <div className="font-mono text-xs text-gray-300 space-y-1.5 max-h-40 overflow-y-auto bg-black/40 p-3.5 rounded-xl">
@@ -705,16 +707,32 @@ export default function AdminRHView({
               </div>
             </div>
 
-            <div className="lg:col-span-4 bg-white rounded-3xl border border-gray-100 shadow-sm p-6">
-              <h4 className="font-display font-bold text-gray-900 text-sm mb-4">Contact d'Assistance</h4>
-              <p className="text-xs text-gray-500 leading-relaxed mb-4">
-                Une question réglementaire sur la gestion des temps de présence ou besoin de modifier le SLA de pointage ?
-              </p>
-              <div className="p-3 bg-gray-50 rounded-2xl border border-gray-200/50 space-y-2 text-xs">
-                <p className="flex items-center gap-2 text-gray-700">
-                  <Phone className="w-4 h-4 text-brand-primary" /> <b>+33 1 45 78 90 12</b>
+            <div className="lg:col-span-4 space-y-6">
+              <div className="bg-white rounded-3xl border border-gray-100 shadow-sm p-6">
+                <h4 className="font-display font-bold text-gray-900 text-sm mb-4">Contact d'Assistance</h4>
+                <p className="text-xs text-gray-500 leading-relaxed mb-4">
+                  Une question réglementaire sur la gestion des temps de présence ou besoin de modifier le SLA de pointage ?
                 </p>
-                <p className="text-gray-400 font-mono text-[10px]">support-rh@autoflow.io</p>
+                <div className="p-3 bg-gray-50 rounded-2xl border border-gray-200/50 space-y-2 text-xs">
+                  <p className="flex items-center gap-2 text-gray-700">
+                    <Phone className="w-4 h-4 text-brand-primary" /> <b>+33 1 45 78 90 12</b>
+                  </p>
+                  <p className="text-gray-400 font-mono text-[10px]">support-rh@autoflow.io</p>
+                </div>
+              </div>
+
+              {/* 3D Coaching Illustration Asset */}
+              <div className="bg-gradient-to-br from-brand-primary/5 to-emerald-50/30 rounded-3xl border border-gray-100 shadow-sm p-5 flex flex-col items-center text-center">
+                <img
+                  src={hrCoachingImg}
+                  alt="RH Accompagnement et Coaching"
+                  referrerPolicy="no-referrer"
+                  className="w-full max-w-[180px] aspect-square object-contain mb-3 rounded-2xl mix-blend-multiply"
+                />
+                <h4 className="font-display font-bold text-gray-900 text-xs mb-1">Accompagnement et Coaching</h4>
+                <p className="text-[10px] text-gray-500 leading-relaxed">
+                  AutoFlow rapproche l'administration de ses équipes grâce à un suivi réactif et des entretiens d'accompagnement de proximité.
+                </p>
               </div>
             </div>
           </div>
@@ -885,6 +903,25 @@ export default function AdminRHView({
           </div>
         </div>
       )}
+
+      </div>
+
+      {/* Footer */}
+      <footer className="mt-16 border-t border-gray-200/80 pt-6 pb-2 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-gray-400 shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="font-mono font-bold text-gray-500 uppercase tracking-wider text-[10px]">AutoFlow Automation</span>
+          <span className="w-1 h-1 bg-gray-300 rounded-full" />
+          <span>© 2026 Tous droits réservés.</span>
+        </div>
+        <div className="flex items-center gap-3 font-mono text-[10px] text-gray-500">
+          <span>Infrastruct : Cloud Run (europe-west2)</span>
+          <span className="w-1 h-1 bg-gray-300 rounded-full" />
+          <span className="text-emerald-600 font-semibold flex items-center gap-1">
+            <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+            Base PostgreSQL Active (Drizzle)
+          </span>
+        </div>
+      </footer>
 
     </div>
   );

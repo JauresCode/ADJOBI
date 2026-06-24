@@ -2,7 +2,8 @@ import React, { useState } from "react";
 import {
   Search, Plus, Bell, Settings, ShieldCheck, Cpu, Activity, Server,
   ArrowUpRight, ArrowDownRight, MoreVertical, ShieldAlert, CpuIcon,
-  Check, LogOut, Power, Database, Layers, Globe, RefreshCw, Eye, AlertCircle, HelpCircle, FileText
+  Check, LogOut, Power, Database, Layers, Globe, RefreshCw, Eye, AlertCircle, HelpCircle, FileText,
+  Tablet, KeyRound, Trash2
 } from "lucide-react";
 import { Employee, SystemAlert, UserRole } from "../types";
 
@@ -47,6 +48,108 @@ export default function SuperAdminView({
   
   const [aiEngine, setAiEngine] = useState<"gemini" | "gpt4">("gemini");
   const [showConfigModels, setShowConfigModels] = useState(false);
+
+  // Tablet Kiosks pairing system states
+  const [kiosks, setKiosks] = useState<any[]>([]);
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isRevokingId, setIsRevokingId] = useState<string | null>(null);
+  const [secondsRemaining, setSecondsRemaining] = useState<number>(0);
+  const [loadingKiosks, setLoadingKiosks] = useState(false);
+
+  // Charger la liste des bornes
+  const fetchKiosks = async () => {
+    setLoadingKiosks(true);
+    try {
+      const res = await fetch("/api/kiosks", {
+        headers: { "X-User-Role": "super_admin" }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setKiosks(data.kiosks || []);
+      }
+    } catch (err) {
+      console.error("Erreur lors de la récupération des bornes:", err);
+    } finally {
+      setLoadingKiosks(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (activeTab === "bornes_management") {
+      fetchKiosks();
+    }
+  }, [activeTab]);
+
+  // Décompte de validité du code d'appairage éphémère (5 minutes = 300s)
+  React.useEffect(() => {
+    if (secondsRemaining <= 0) {
+      setPairingCode(null);
+      return;
+    }
+    const timer = setInterval(() => {
+      setSecondsRemaining(prev => prev - 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [secondsRemaining]);
+
+  const handleGeneratePairing = async () => {
+    setIsGenerating(true);
+    try {
+      const res = await fetch("/api/kiosks/generate-pairing", {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "X-User-Role": "super_admin"
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPairingCode(data.code);
+        setSecondsRemaining(300); // 5 minutes
+      }
+    } catch (err) {
+      console.error("Erreur de génération du code d'appairage:", err);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleRevokeKiosk = async (id: string) => {
+    if (!window.confirm("Êtes-vous absolument sûr de vouloir révoquer l'autorisation de cette borne ? Elle ne pourra plus afficher les QR codes d'enregistrement.")) {
+      return;
+    }
+    setIsRevokingId(id);
+    try {
+      const res = await fetch("/api/kiosks/revoke", {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "X-User-Role": "super_admin"
+        },
+        body: JSON.stringify({ id })
+      });
+      if (res.ok) {
+        // Recharger les bornes
+        await fetchKiosks();
+        // Ajouter un log audit local
+        const newLog = {
+          id: "LOG" + Math.random().toString(36).substring(2, 6).toUpperCase(),
+          timestamp: new Date().toISOString(),
+          user: "Super Admin",
+          action: "Révocation Borne",
+          details: `Désactivation et révocation de la borne tablette ID : ${id}`,
+          category: "Sécurité",
+          status: "success"
+        };
+        setAuditLogs(prev => [newLog, ...prev]);
+      }
+    } catch (err) {
+      console.error("Erreur de révocation:", err);
+    } finally {
+      setIsRevokingId(null);
+    }
+  };
 
   // Audit Logs Mock Data
   const [auditLogs, setAuditLogs] = useState([
@@ -159,13 +262,15 @@ export default function SuperAdminView({
   });
 
   return (
-    <div className="flex-1 bg-[#f8faf9] h-full p-4 md:p-8 overflow-y-auto relative font-sans">
+    <div className="flex-1 bg-[#f8faf9] h-full p-4 md:p-8 overflow-y-auto relative font-sans flex flex-col justify-between">
+      <div className="flex-1 flex flex-col">
       
       {/* HEADER SECTION */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-8">
         <div>
           <h1 className="text-3xl font-display font-bold text-gray-900 tracking-tight">
             {activeTab === "dashboard" && "Tableau de Bord Central"}
+            {activeTab === "bornes_management" && "Gestion des Bornes d'Entrée"}
             {activeTab === "analyses" && "Analyses & Télémétrie Système"}
             {activeTab === "structure" && "Gestion des Comptes & Rôles"}
             {activeTab === "rapports" && "Journal d'Audit et Logs de Sécurité"}
@@ -174,6 +279,7 @@ export default function SuperAdminView({
           </h1>
           <p className="text-sm text-gray-500 mt-1">
             {activeTab === "dashboard" && "Super Administrateur • Vue d'ensemble de l'automatisation RH et de l'infrastructure"}
+            {activeTab === "bornes_management" && "Enregistrer, superviser et révoquer les tablettes d'accueil officielles de l'entreprise"}
             {activeTab === "analyses" && "Surveillance des performances de l'IA, de la base de données et des temps de réponse"}
             {activeTab === "structure" && "Créer, modifier, activer ou désactiver les profils d'accès de l'entreprise"}
             {activeTab === "rapports" && "Historique immuable des événements critiques et des actions administratives"}
@@ -206,7 +312,7 @@ export default function SuperAdminView({
         <div className="space-y-8 animate-fadeIn">
           {/* 4 Stats Cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between h-36">
+            <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between h-[150px]">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">SANTÉ SYSTÈME</p>
@@ -222,8 +328,8 @@ export default function SuperAdminView({
                 <span className="text-gray-400 font-normal ml-1">aucun incident</span>
               </div>
             </div>
-
-            <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between h-36">
+ 
+            <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between h-[150px]">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">NŒUDS DE CALCUL</p>
@@ -238,8 +344,8 @@ export default function SuperAdminView({
                 <span>Cloud Run actif</span>
               </div>
             </div>
-
-            <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between h-36">
+ 
+            <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between h-[150px]">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">LATENCE MOYENNE</p>
@@ -254,8 +360,8 @@ export default function SuperAdminView({
                 <span>Temps de réponse excellent</span>
               </div>
             </div>
-
-            <div className="bg-brand-dark p-6 rounded-2xl border border-brand-primary/25 shadow-lg flex flex-col justify-between h-36">
+ 
+            <div className="bg-brand-dark p-6 rounded-2xl border border-brand-primary/25 shadow-lg flex flex-col justify-between h-[150px]">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-[11px] font-bold text-brand-neon/80 uppercase tracking-widest">TRANSACTIONS IA</p>
@@ -1171,6 +1277,181 @@ export default function SuperAdminView({
         </div>
       )}
 
+      {/* ==================== TAB 7: BORNES_MANAGEMENT (GESTION DES BORNES D'ENTREE) ==================== */}
+      {activeTab === "bornes_management" && (
+        <div className="space-y-8 animate-fadeIn">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+            
+            {/* Left side: Enregistrer une nouvelle borne */}
+            <div className="lg:col-span-4 space-y-6">
+              <div className="bg-white rounded-3xl border border-gray-100 shadow-sm p-6">
+                <div className="flex items-center gap-3 mb-5 border-b border-gray-50 pb-4">
+                  <div className="p-2.5 bg-brand-primary/10 rounded-xl text-brand-primary border border-brand-primary/10">
+                    <KeyRound className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-display font-bold text-gray-900 text-sm">Générer un Code d'Appairage</h3>
+                    <p className="text-xs text-gray-500 mt-0.5">Enregistrer une nouvelle tablette de pointage</p>
+                  </div>
+                </div>
+
+                <p className="text-xs text-gray-400 leading-relaxed mb-6">
+                  Générez un jeton d'accès temporaire à usage unique pour installer l'écran de pointage sécurisé d'AutoFlow sur une tablette d'entreprise physique.
+                </p>
+
+                {pairingCode ? (
+                  <div className="bg-brand-dark rounded-2xl p-6 text-center border border-brand-primary/30 relative overflow-hidden">
+                    {/* Pulsing decoration */}
+                    <div className="absolute top-0 left-0 right-0 h-1 bg-brand-neon animate-pulse" />
+                    
+                    <span className="text-[10px] text-brand-neon font-mono font-bold tracking-widest uppercase">Code d'appairage actif</span>
+                    <div className="text-2xl md:text-3xl font-mono font-black text-white tracking-widest my-4 selection:bg-brand-neon/30">
+                      {pairingCode}
+                    </div>
+                    
+                    <div className="flex items-center justify-center gap-1.5 text-xs text-gray-400 font-mono">
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-brand-neon" />
+                      <span>Expire dans : <b>{Math.floor(secondsRemaining / 60)}m {secondsRemaining % 60}s</b></span>
+                    </div>
+
+                    <button
+                      onClick={handleGeneratePairing}
+                      className="mt-5 text-xs text-brand-primary hover:text-brand-neon font-bold transition-all underline cursor-pointer"
+                    >
+                      Générer un nouveau code
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={handleGeneratePairing}
+                    disabled={isGenerating}
+                    className="w-full py-3 px-4 bg-brand-dark hover:bg-[#04281f] text-white rounded-xl text-xs font-bold shadow-md shadow-brand-dark/10 hover:shadow-brand-neon/5 active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    {isGenerating ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                        <span>Génération en cours...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="w-4 h-4 text-brand-neon" />
+                        <span>Enregistrer une nouvelle borne</span>
+                      </>
+                    )}
+                  </button>
+                )}
+
+                <div className="mt-6 pt-4 border-t border-gray-50 text-[11px] text-gray-400 space-y-2">
+                  <div className="flex items-start gap-2">
+                    <span className="text-brand-primary font-bold">1.</span>
+                    <p>Générez le code ci-dessus.</p>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <span className="text-brand-primary font-bold">2.</span>
+                    <p>Ouvrez l'URL <span className="font-mono bg-gray-50 px-1 py-0.5 rounded text-gray-600">/borne/initialisation</span> sur le navigateur de votre tablette d'accueil.</p>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <span className="text-brand-primary font-bold">3.</span>
+                    <p>Saisissez le code généré et validez pour sceller l'appairage sécurisé.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Right side: Bornes Actives Table */}
+            <div className="lg:col-span-8 space-y-6">
+              <div className="bg-white rounded-3xl border border-gray-100 shadow-sm p-6">
+                <div className="flex items-center gap-3 mb-5 border-b border-gray-50 pb-4">
+                  <div className="p-2.5 bg-gray-50 rounded-xl text-gray-600 border border-gray-100">
+                    <Tablet className="w-5 h-5 text-gray-500" />
+                  </div>
+                  <div>
+                    <h3 className="font-display font-bold text-gray-900 text-sm">Bornes Actives et Enregistrées</h3>
+                    <p className="text-xs text-gray-500 mt-0.5">Surveillez et gérez les terminaux de pointage</p>
+                  </div>
+                </div>
+
+                {loadingKiosks ? (
+                  <div className="flex flex-col items-center justify-center py-12 text-center text-gray-400">
+                    <RefreshCw className="w-8 h-8 animate-spin text-brand-primary mb-2" />
+                    <p className="text-xs font-mono">Chargement des terminaux...</p>
+                  </div>
+                ) : kiosks.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-12 text-center text-gray-400">
+                    <Tablet className="w-12 h-12 text-gray-300 mb-3" />
+                    <p className="text-sm font-semibold text-gray-500">Aucune borne configurée</p>
+                    <p className="text-xs text-gray-400 mt-1 max-w-sm">
+                      Générez un code d'appairage sur la gauche pour connecter votre première tablette physique à l'accueil.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-gray-100">
+                          <th className="py-3 px-4 text-[10px] font-bold text-gray-500 uppercase tracking-wider font-mono">Nom de la Borne</th>
+                          <th className="py-3 px-4 text-[10px] font-bold text-gray-500 uppercase tracking-wider font-mono">ID Matériel</th>
+                          <th className="py-3 px-4 text-[10px] font-bold text-gray-500 uppercase tracking-wider font-mono">Date d'activation</th>
+                          <th className="py-3 px-4 text-[10px] font-bold text-gray-500 uppercase tracking-wider font-mono">Statut</th>
+                          <th className="py-3 px-4 text-right text-[10px] font-bold text-gray-500 uppercase tracking-wider font-mono">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-50 text-xs">
+                        {kiosks.map((kiosk) => (
+                          <tr key={kiosk.id} className="hover:bg-gray-50/50 transition-colors">
+                            <td className="py-3.5 px-4 font-semibold text-gray-900">{kiosk.name}</td>
+                            <td className="py-3.5 px-4 font-mono text-[11px] text-gray-500">{kiosk.id}</td>
+                            <td className="py-3.5 px-4 text-gray-500">
+                              {new Date(kiosk.activatedAt).toLocaleDateString("fr-FR", {
+                                day: "numeric",
+                                month: "short",
+                                year: "numeric",
+                                hour: "2-digit",
+                                minute: "2-digit"
+                              })}
+                            </td>
+                            <td className="py-3.5 px-4">
+                              {kiosk.isActive ? (
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold font-mono bg-emerald-500/10 text-emerald-600 border border-emerald-500/10">
+                                  ● ACTIF
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold font-mono bg-rose-500/10 text-rose-600 border border-rose-500/10">
+                                  ● RÉVOQUÉ
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3.5 px-4 text-right">
+                              {kiosk.isActive ? (
+                                <button
+                                  onClick={() => handleRevokeKiosk(kiosk.id)}
+                                  disabled={isRevokingId === kiosk.id}
+                                  className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 hover:text-rose-700 rounded-lg text-[11px] font-bold transition-all flex items-center justify-center gap-1 ml-auto cursor-pointer"
+                                >
+                                  {isRevokingId === kiosk.id ? (
+                                    <RefreshCw className="w-3 h-3 animate-spin text-rose-600" />
+                                  ) : (
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  )}
+                                  <span>Révoquer</span>
+                                </button>
+                              ) : (
+                                <span className="text-[11px] text-gray-400 italic">Aucune action possible</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+
+          </div>
+        </div>
+      )}
+
       {/* ==================== CONFIG MODELS MODAL ==================== */}
       {showConfigModels && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
@@ -1274,6 +1555,25 @@ export default function SuperAdminView({
           </div>
         </div>
       )}
+
+      </div>
+
+      {/* Footer */}
+      <footer className="mt-16 border-t border-gray-200/80 pt-6 pb-2 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-gray-400 shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="font-mono font-bold text-gray-500 uppercase tracking-wider text-[10px]">AutoFlow Automation</span>
+          <span className="w-1 h-1 bg-gray-300 rounded-full" />
+          <span>© 2026 Tous droits réservés.</span>
+        </div>
+        <div className="flex items-center gap-3 font-mono text-[10px] text-gray-500">
+          <span>Infrastruct : Cloud Run (europe-west2)</span>
+          <span className="w-1 h-1 bg-gray-300 rounded-full" />
+          <span className="text-emerald-600 font-semibold flex items-center gap-1">
+            <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+            Base PostgreSQL Active (Drizzle)
+          </span>
+        </div>
+      </footer>
 
     </div>
   );

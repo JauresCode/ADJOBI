@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { MessageSquare, X, Send, Sparkles, AlertTriangle, ShieldCheck, Cpu } from "lucide-react";
+import { MessageSquare, X, Send, AlertTriangle, ShieldCheck, Cpu } from "lucide-react";
 import Markdown from "react-markdown";
 
 interface Message {

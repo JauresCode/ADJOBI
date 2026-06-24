@@ -1,16 +1,17 @@
 import React, { useState } from "react";
-import { Mail, Lock, Eye, EyeOff, Globe, Building2, ShieldAlert } from "lucide-react";
+import { Mail, Lock, Eye, EyeOff, Globe, Building2, ShieldAlert, Sparkles } from "lucide-react";
 import { Employee } from "../types";
 import Logo from "./Logo";
+import { auth, googleAuthProvider, signInWithPopup } from "../lib/firebase.ts";
 
 interface LoginViewProps {
   onLoginSuccess: (user: Employee) => void;
   employeesList: Employee[];
 }
 
-export default function LoginView({ onLoginSuccess, employeesList }: LoginViewProps) {
-  const [email, setEmail] = useState("alex.w@autoflow.ci");
-  const [password, setPassword] = useState("password123");
+export default function LoginView({ onLoginSuccess }: LoginViewProps) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [remember, setRemember] = useState(true);
   const [error, setError] = useState("");
@@ -32,7 +33,15 @@ export default function LoginView({ onLoginSuccess, employeesList }: LoginViewPr
         body: JSON.stringify({ email: email.trim(), password: password })
       });
 
-      const data = await res.json();
+      const contentType = res.headers.get("content-type");
+      let data: any;
+      if (contentType && contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        console.error("Non-JSON response for login:", text);
+        throw new Error(`Le serveur a renvoyé une réponse invalide (${res.status}). Veuillez vérifier que le serveur est démarré.`);
+      }
 
       if (!res.ok || !data.success) {
         setError(data.error || "Une erreur est survenue lors de la connexion.");
@@ -47,7 +56,6 @@ export default function LoginView({ onLoginSuccess, employeesList }: LoginViewPr
 
         setSuccessMessage(`Connexion réussie ! Redirection immédiate vers ${targetWorkspace}...`);
         
-        // Simuler un léger délai de chargement pour un effet visuel d'aiguillage impeccable
         setTimeout(() => {
           onLoginSuccess(data.user);
           setLoading(false);
@@ -60,25 +68,40 @@ export default function LoginView({ onLoginSuccess, employeesList }: LoginViewPr
     }
   };
 
-  const handleQuickLogin = async (emp: Employee) => {
-    setEmail(emp.email);
-    setPassword("password123");
+  const handleGoogleLogin = async () => {
     setError("");
     setSuccessMessage("");
     setLoading(true);
 
     try {
-      const res = await fetch("/api/login", {
+      // Déclencher le popup Google Auth officiel
+      const result = await signInWithPopup(auth, googleAuthProvider);
+      const user = result.user;
+      const idToken = await user.getIdToken();
+
+      // Envoyer le token ID au backend pour vérification
+      const res = await fetch("/api/login-firebase", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ email: emp.email, password: "password123" })
+        body: JSON.stringify({ idToken })
       });
 
-      const data = await res.json();
+      const contentType = res.headers.get("content-type");
+      let data: any;
+      if (contentType && contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        console.error("Non-JSON response for login-firebase:", text);
+        throw new Error(`Le serveur d'authentification a renvoyé une réponse invalide (${res.status}).`);
+      }
 
-      if (res.ok && data.success) {
+      if (!res.ok || !data.success) {
+        setError(data.error || "L'accès à votre compte n'a pas pu être validé.");
+        setLoading(false);
+      } else {
         const userRole = data.user.mappedRole;
         let targetWorkspace = "";
         if (userRole === "SUPER_ADMIN") targetWorkspace = "l'espace Super Administrateur";
@@ -86,18 +109,22 @@ export default function LoginView({ onLoginSuccess, employeesList }: LoginViewPr
         if (userRole === "CHEF_SERVICE") targetWorkspace = "l'espace Chef de Service";
         if (userRole === "EMPLOYE") targetWorkspace = "l'espace Profil Employé";
 
-        setSuccessMessage(`Accès de Démo autorisé ! Redirection automatique vers ${targetWorkspace}...`);
-        
+        setSuccessMessage(`Authentification Google réussie ! Bienvenue, redirection vers ${targetWorkspace}...`);
+
         setTimeout(() => {
           onLoginSuccess(data.user);
           setLoading(false);
         }, 1200);
-      } else {
-        setError(data.error || "Une erreur est survenue lors de la connexion rapide.");
-        setLoading(false);
       }
-    } catch (err) {
-      setError("Erreur serveur lors de la connexion rapide.");
+    } catch (err: any) {
+      console.error("Google Auth failed:", err);
+      if (err.code === "auth/popup-blocked") {
+        setError("Le popup de connexion Google a été bloqué par votre navigateur. Veuillez autoriser les popups pour ce site.");
+      } else if (err.code === "auth/cancelled-popup-request") {
+        setError("La connexion via Google a été annulée par l'utilisateur.");
+      } else {
+        setError("Erreur lors de la connexion Google SSO : " + (err.message || err));
+      }
       setLoading(false);
     }
   };
@@ -125,50 +152,74 @@ export default function LoginView({ onLoginSuccess, employeesList }: LoginViewPr
               for Modern Teams
             </h1>
             <p className="text-gray-300 text-base md:text-lg max-w-md mx-auto lg:mx-0 leading-relaxed">
-              Seamlessly manage talent, performance, and workplace culture with our AI-driven management platform.
+              Gérez de manière professionnelle et ultra-sécurisée la présence, le pointage numérique, les demandes de congés et le planning des équipes.
             </p>
           </div>
 
           <div className="grid grid-cols-2 gap-8 pt-4 max-w-sm mx-auto lg:mx-0 border-t border-brand-primary/20">
             <div>
-              <p className="text-3xl md:text-4xl font-display font-bold text-white">2.4k+</p>
-              <p className="text-xs text-gray-400 font-medium uppercase mt-1">Utilisateurs actifs</p>
+              <p className="text-3xl md:text-4xl font-display font-bold text-white">100%</p>
+              <p className="text-xs text-gray-400 font-medium uppercase mt-1">Données Sécurisées</p>
             </div>
             <div>
-              <p className="text-3xl md:text-4xl font-display font-bold text-brand-neon">98%</p>
-              <p className="text-xs text-gray-400 font-medium uppercase mt-1">Taux d'efficacité</p>
+              <p className="text-3xl md:text-4xl font-display font-bold text-brand-neon">Real-time</p>
+              <p className="text-xs text-gray-400 font-medium uppercase mt-1">Pointage Numérique</p>
             </div>
           </div>
         </div>
 
-        {/* Right Side: Login Form Box & Test Accounts */}
+        {/* Right Side: Login Form Box */}
         <div className="lg:col-span-6 space-y-6">
           
           {/* Main Login Card */}
-          <div className="glass-panel p-8 md:p-10 rounded-3xl shadow-2xl shadow-black/60 relative overflow-hidden max-w-lg mx-auto border border-white/20">
+          <div className="glass-panel p-8 md:p-10 rounded-3xl shadow-2xl shadow-black/60 relative overflow-hidden max-w-lg mx-auto border border-white/20 bg-white/95">
             <div className="space-y-2 mb-8 text-center">
-              <h2 className="text-2xl md:text-3xl font-display font-bold text-gray-900">Welcome Back</h2>
-              <p className="text-sm text-gray-500">Please enter your credentials to access the dashboard</p>
+              <h2 className="text-2xl md:text-3xl font-display font-bold text-gray-900 flex items-center justify-center gap-2">
+                Espace Connexion
+              </h2>
+              <p className="text-sm text-gray-500">Seuls les comptes créés par le Super Admin sont autorisés</p>
             </div>
 
             {error && (
-              <div className="mb-6 p-4 rounded-xl bg-red-50/80 border border-red-200 text-red-800 text-xs flex items-start gap-2.5 backdrop-blur-sm">
+              <div className="mb-6 p-4 rounded-xl bg-red-50/90 border border-red-200 text-red-800 text-xs flex items-start gap-2.5 backdrop-blur-sm">
                 <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 text-red-600" />
-                <span>{error}</span>
+                <span className="leading-relaxed">{error}</span>
               </div>
             )}
 
             {successMessage && (
-              <div className="mb-6 p-4 rounded-xl bg-emerald-50/80 border border-emerald-200 text-emerald-800 text-xs flex items-start gap-2.5 backdrop-blur-sm">
+              <div className="mb-6 p-4 rounded-xl bg-emerald-50/90 border border-emerald-200 text-emerald-800 text-xs flex items-start gap-2.5 backdrop-blur-sm">
                 <Globe className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600 animate-spin" />
-                <span>{successMessage}</span>
+                <span className="leading-relaxed">{successMessage}</span>
               </div>
             )}
+
+            {/* Google Authentication Button (SSO) */}
+            <button
+              type="button"
+              disabled={loading}
+              onClick={handleGoogleLogin}
+              className="w-full py-3 px-4 rounded-xl border border-gray-300 hover:border-emerald-500 bg-white hover:bg-emerald-50/30 text-gray-700 text-sm font-semibold flex items-center justify-center gap-3 transition-all cursor-pointer shadow-sm hover:shadow-md disabled:opacity-60"
+            >
+              <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none">
+                <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22c-.81-2.5-2.61-4.44-6.19-4.63z" fill="#FBBC05"/>
+                <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+              </svg>
+              <span>Se connecter avec Google</span>
+            </button>
+
+            <div className="my-6 flex items-center justify-center gap-3">
+              <div className="h-px bg-gray-200 flex-1" />
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-2">OU IDENTIFIANTS</span>
+              <div className="h-px bg-gray-200 flex-1" />
+            </div>
 
             <form onSubmit={handleSubmit} className="space-y-5">
               {/* Email Input */}
               <div className="space-y-2">
-                <label className="text-xs font-semibold text-gray-700 uppercase tracking-wider block">Professional Email</label>
+                <label className="text-xs font-semibold text-gray-700 uppercase tracking-wider block">Adresse Email</label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400">
                     <span className="text-sm">@</span>
@@ -177,7 +228,7 @@ export default function LoginView({ onLoginSuccess, employeesList }: LoginViewPr
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="alex.w@autoflow.ci"
+                    placeholder="votre.nom@autoflow.ci"
                     disabled={loading}
                     className="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-200 bg-white/70 focus:bg-white focus:border-brand-primary focus:ring-1 focus:ring-brand-primary/20 transition-all duration-200 text-gray-900 outline-none placeholder:text-gray-400 disabled:opacity-60"
                     required
@@ -188,8 +239,7 @@ export default function LoginView({ onLoginSuccess, employeesList }: LoginViewPr
               {/* Password Input */}
               <div className="space-y-2">
                 <div className="flex justify-between items-center">
-                  <label className="text-xs font-semibold text-gray-700 uppercase tracking-wider block">Secure Password</label>
-                  <a href="#forgot" className="text-xs font-semibold text-brand-primary hover:text-brand-light transition-colors">Forgot?</a>
+                  <label className="text-xs font-semibold text-gray-700 uppercase tracking-wider block">Mot de passe</label>
                 </div>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400">
@@ -226,7 +276,7 @@ export default function LoginView({ onLoginSuccess, employeesList }: LoginViewPr
                   className="w-4 h-4 text-brand-primary border-gray-300 rounded focus:ring-brand-primary/30 disabled:opacity-50"
                 />
                 <label htmlFor="remember" className="text-xs font-medium text-gray-600 select-none">
-                  Remember this session
+                  Se souvenir de cette session
                 </label>
               </div>
 
@@ -242,11 +292,11 @@ export default function LoginView({ onLoginSuccess, employeesList }: LoginViewPr
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                     </svg>
-                    <span>Vérification & Redirection...</span>
+                    <span>Vérification...</span>
                   </>
                 ) : (
                   <>
-                    <span>Sign Into Dashboard</span>
+                    <span>Se connecter</span>
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
                     </svg>
@@ -255,60 +305,10 @@ export default function LoginView({ onLoginSuccess, employeesList }: LoginViewPr
               </button>
             </form>
 
-            {/* SSO Section */}
-            <div className="my-6 flex items-center justify-center gap-3">
-              <div className="h-px bg-gray-200 flex-1" />
-              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest bg-gray-50/10 px-2">SSO Integrated</span>
-              <div className="h-px bg-gray-200 flex-1" />
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <button className="flex items-center justify-center gap-2 py-2.5 rounded-xl border border-gray-200 bg-white/50 hover:bg-white text-xs font-medium text-gray-700 transition-colors">
-                <span className="text-base">🌈</span>
-                <span>Google</span>
-              </button>
-              <button className="flex items-center justify-center gap-2 py-2.5 rounded-xl border border-gray-200 bg-white/50 hover:bg-white text-xs font-medium text-gray-700 transition-colors">
-                <Building2 className="w-3.5 h-3.5 text-gray-500" />
-                <span>Enterprise</span>
-              </button>
-            </div>
-
-            <div className="text-center mt-6">
-              <p className="text-xs text-gray-500">
-                New to the platform? <a href="#request" className="font-semibold text-brand-primary hover:text-brand-light transition-colors">Request access</a>
+            <div className="text-center mt-6 text-xs text-gray-400">
+              <p>
+                Si vous n'êtes pas encore enregistré, demandez à votre <span className="font-semibold text-brand-primary">Super Admin</span> de créer votre compte de collaborateur.
               </p>
-            </div>
-          </div>
-
-          {/* Quick Login Tray (AMAZING UX feature!) */}
-          <div className="glass-panel-dark p-6 rounded-2xl max-w-lg mx-auto border border-brand-primary/20 space-y-3">
-            <div className="flex items-center gap-2 text-brand-neon">
-              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
-              </svg>
-              <h4 className="text-xs font-bold tracking-wider uppercase font-display">Comptes de Démo - Cliquez pour tester</h4>
-            </div>
-            
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
-              {employeesList.map((emp) => {
-                let roleLabel = "";
-                if (emp.role === "super_admin") roleLabel = "Super Admin";
-                if (emp.role === "hr_admin") roleLabel = "Admin RH";
-                if (emp.role === "chef_service") roleLabel = "Chef Service";
-                if (emp.role === "employee") roleLabel = emp.id === "EMP007" ? "Lucas (Dev)" : "Sarah (Mktg)";
-
-                return (
-                  <button
-                    key={emp.id}
-                    disabled={loading}
-                    onClick={() => handleQuickLogin(emp)}
-                    className="flex flex-col text-left p-2.5 rounded-xl bg-brand-dark/80 hover:bg-brand-primary/50 border border-brand-primary/10 text-white hover:border-brand-neon/40 transition-all duration-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <span className="font-semibold truncate">{emp.name}</span>
-                    <span className="text-[9px] text-brand-neon/80 mt-0.5">{roleLabel}</span>
-                  </button>
-                );
-              })}
             </div>
           </div>
 
