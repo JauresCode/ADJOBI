@@ -1,0 +1,6 @@
+{
+  "name": "AutoFlow RH",
+  "description": "Plateforme professionnelle d'automatisation et de gestion des tâches en entreprise basée sur l'intelligence artificielle.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
